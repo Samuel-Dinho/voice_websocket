@@ -17,16 +17,36 @@ wss.on('connection', (ws: WebSocket) => {
   ws.on('message', async (message: Buffer) => {
     try {
       const dataString = message.toString();
-      const parsedData: TranslateAudioInput = JSON.parse(dataString);
+      let parsedData: TranslateAudioInput;
+
+      try {
+        parsedData = JSON.parse(dataString);
+      } catch (e) {
+        const errorDetail = e instanceof Error ? e.message : String(e);
+        console.warn(`[WebSocketServer] Falha ao parsear JSON: "${dataString.substring(0,200)}..."`, errorDetail);
+        ws.send(JSON.stringify({ error: `Formato de mensagem inválido (não é JSON): ${errorDetail}` }));
+        return;
+      }
 
       if (!parsedData.audioDataUri || !parsedData.sourceLanguage || !parsedData.targetLanguage) {
         const errorMsg = 'Formato de mensagem inválido. Campos obrigatórios: audioDataUri, sourceLanguage, targetLanguage';
-        console.warn(`[WebSocketServer] Mensagem inválida recebida: ${dataString.substring(0,200)}...`); // Log início da string
+        console.warn(`[WebSocketServer] Mensagem inválida recebida (campos faltando): ${dataString.substring(0,200)}...`);
         ws.send(JSON.stringify({ error: errorMsg }));
         return;
       }
       
-      const audioDataUriStart = parsedData.audioDataUri.substring(0, 100); // Log para checar o formato do data URI
+      // Validação mais rigorosa do audioDataUri
+      const base64Marker = ';base64,';
+      const base64StartIndex = parsedData.audioDataUri.indexOf(base64Marker);
+
+      if (base64StartIndex === -1 || parsedData.audioDataUri.substring(base64StartIndex + base64Marker.length).trim() === '') {
+        const errorMsg = 'Formato de audioDataUri inválido ou dados de áudio ausentes após a codificação base64.';
+        console.warn(`[WebSocketServer] audioDataUri inválido (sem dados base64) recebido: ${parsedData.audioDataUri.substring(0, 200)}...`);
+        ws.send(JSON.stringify({ error: errorMsg }));
+        return;
+      }
+
+      const audioDataUriStart = parsedData.audioDataUri.substring(0, 100); 
       console.log(`[WebSocketServer] Áudio recebido para tradução: ${parsedData.sourceLanguage} -> ${parsedData.targetLanguage}. audioDataUri (início): ${audioDataUriStart}... (tamanho total: ${parsedData.audioDataUri.length})`);
 
       const translationOutput = await translateAudio(parsedData);
@@ -37,9 +57,8 @@ wss.on('connection', (ws: WebSocket) => {
       console.error('[WebSocketServer] Erro ao processar mensagem ou traduzir:', error);
       let errorMessage = 'Erro ao processar mensagem ou durante a tradução.';
       if (error instanceof Error) {
-          errorMessage = error.message; // Captura a mensagem de erro específica
+          errorMessage = error.message; 
       }
-      // Tentar enviar erro específico para o cliente
       try {
         ws.send(JSON.stringify({ error: `Erro do servidor: ${errorMessage}` }));
       } catch (sendError) {
@@ -49,8 +68,8 @@ wss.on('connection', (ws: WebSocket) => {
   });
 
   ws.on('close', (code, reason) => {
-    const reasonText = reason ? reason.toString() : 'Nenhuma razão especificada';
-    console.log(`[WebSocketServer] Cliente desconectado. Código: ${code}, Razão: ${reasonText}`);
+    const reasonText = reason ? reason.toString('utf8') : 'Nenhuma razão especificada'; // Decodificar reason para utf8
+    console.log(`[WebSocketServer] Cliente desconectado. Código: ${code}, Razão: "${reasonText}"`);
   });
 
   ws.on('error', (error: Error) => {
@@ -68,6 +87,4 @@ wss.on('connection', (ws: WebSocket) => {
 wss.on('error', (error: Error) => {
   console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error.message, error);
 });
-    
-
     
