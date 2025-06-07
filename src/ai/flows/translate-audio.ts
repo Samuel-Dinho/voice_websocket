@@ -1,6 +1,5 @@
 
 'use server';
-
 /**
  * @fileOverview Audio transcription flow (translation step removed for debugging).
  *
@@ -19,8 +18,7 @@ const TranslateAudioInputSchema = z.object({
     .describe(
       "The audio data as a data URI that must include a MIME type and use Base64 encoding. Expected format: 'data:<mimetype>;base64,<encoded_data>'."
     ),
-  sourceLanguage: z.string().describe('The language of the audio to be transcribed.'),
-  targetLanguage: z.string().describe('The language to translate to (currently unused).'), // Kept for interface compatibility for now
+  sourceLanguage: z.string().describe('The language of the audio to be transcribed (currently not used in the simplified prompt).'),
 });
 export type TranslateAudioInput = z.infer<typeof TranslateAudioInputSchema>;
 
@@ -45,11 +43,11 @@ const translateAudioFlow = ai.defineFlow(
     console.log(`[translateAudioFlow] Processing input. audioDataUri (start): ${input.audioDataUri.substring(0, 200)}...`);
     
     try {
-      // Step 1: Transcribe audio to text
-      console.log(`[translateAudioFlow] Step 1: Attempting to transcribe audio from ${input.sourceLanguage}. audioDataUri (start): ${input.audioDataUri.substring(0,60)}...)`);
+      // Step 1: Transcribe audio to text with a highly simplified prompt
+      console.log(`[translateAudioFlow] Step 1: Attempting to transcribe audio. audioDataUri (start): ${input.audioDataUri.substring(0,60)}...)`);
       
       const transcriptionPromptParts = [
-        {text: `You are an audio transcription expert. Transcribe the following audio from ${input.sourceLanguage}. Provide only the transcribed text.`},
+        {text: "Transcribe the following audio. Provide only the transcribed text."}, // Prompt ultra-simplificado
         {media: {url: input.audioDataUri}},
         {text: "Transcription:"}
       ];
@@ -72,7 +70,7 @@ const translateAudioFlow = ai.defineFlow(
 
       if (!transcribedText) {
           console.warn('[translateAudioFlow] Transcription step returned no text or empty text. Returning indicative message.');
-          return { transcribedText: `[Transcription Error: No text returned for ${input.sourceLanguage} audio chunk]` };
+          return { transcribedText: `[Transcription Error: No text returned for audio chunk]` };
       }
 
       console.log(`[translateAudioFlow] Transcription successful. Text: "${transcribedText}".`);
@@ -91,9 +89,7 @@ const translateAudioFlow = ai.defineFlow(
         } else {
           console.error('[translateAudioFlow] Non-GoogleGenerativeAIFetchError Details:', error);
         }
-        // Re-throw the original error to be caught by the WebSocket server
         throw error; 
     }
   }
 );
-
