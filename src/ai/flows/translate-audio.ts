@@ -33,18 +33,6 @@ export async function translateAudio(input: TranslateAudioInput): Promise<Transl
   return translateAudioFlow(input);
 }
 
-/*
-// Comentando o ai.definePrompt para tentar uma abordagem mais stateless com ai.generate() diretamente
-const prompt = ai.definePrompt({
-  name: 'translateAudioPrompt',
-  input: {schema: TranslateAudioInputSchema},
-  output: {schema: TranslateAudioOutputSchema},
-  prompt: `Translate the following audio from {{{sourceLanguage}}} to {{{targetLanguage}}}.
-Audio: {{media url=audioDataUri}}
-Translation:`,
-});
-*/
-
 const translateAudioFlow = ai.defineFlow(
   {
     name: 'translateAudioFlow',
@@ -61,13 +49,29 @@ const translateAudioFlow = ai.defineFlow(
           {media: {url: input.audioDataUri}},
           {text: "Translation:"}
         ],
-        // model: 'googleai/gemini-2.0-flash', // Removido - confiando no modelo global do genkit.ts
         output: {
           format: 'json',
           schema: TranslateAudioOutputSchema,
         },
         config: { 
-            // safetySettings: [ { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE'} ]
+          safetySettings: [
+            {
+              category: 'HARM_CATEGORY_HATE_SPEECH',
+              threshold: 'BLOCK_NONE',
+            },
+            {
+              category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+              threshold: 'BLOCK_NONE',
+            },
+            {
+              category: 'HARM_CATEGORY_HARASSMENT',
+              threshold: 'BLOCK_NONE',
+            },
+            {
+              category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+              threshold: 'BLOCK_NONE',
+            },
+          ]
         }
       });
 
@@ -78,9 +82,9 @@ const translateAudioFlow = ai.defineFlow(
       return output;
 
     } catch (error) {
-        console.error('[translateAudioFlow] Error during ai.generate:', error);
-        // Lançar o erro original para manter a stack trace e detalhes.
+        // Log o erro original para manter a stack trace e detalhes.
         // O servidor WebSocket pode adicionar seu próprio prefixo se necessário.
+        console.error('[translateAudioFlow] Error during ai.generate:', error);
         throw error; 
     }
   }
