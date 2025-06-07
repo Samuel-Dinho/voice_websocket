@@ -236,3 +236,4 @@ wss.on('connection', (ws: WebSocket) => {
 wss.on('error', (error: Error) => {
   console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error.message, error);
 });
+
