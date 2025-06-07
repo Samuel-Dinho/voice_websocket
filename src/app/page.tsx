@@ -5,16 +5,17 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Mic, MicOff, Loader2, Volume2, AlertTriangle, Languages, Power } from "lucide-react";
+import { Mic, MicOff, Loader2, Volume2, AlertTriangle, Languages } from "lucide-react";
 import { LanguageSelector } from "@/components/LanguageSelector";
-import { supportedLanguages, type Language } from "@/lib/languages";
-// A função translateAudio não será chamada diretamente pelo cliente com WebSockets
-// import { translateAudio } from "@/ai/flows/translate-audio"; 
+import { supportedLanguages } from "@/lib/languages";
 import { useToast } from "@/hooks/use-toast";
 import { LinguaVoxLogo } from "@/components/icons/LinguaVoxLogo";
 import { Separator } from "@/components/ui/separator";
 
-const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || (typeof window !== 'undefined' ? (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/api/translate-stream' : 'ws://localhost:3000/api/translate-stream');
+// Ajuste aqui: Garante que WEBSOCKET_URL seja consistente.
+// Se NEXT_PUBLIC_WEBSOCKET_URL estiver definida no .env (como ws://localhost:3001), ela será usada.
+// Caso contrário, o fallback 'ws://localhost:3001' será usado tanto no servidor quanto no cliente.
+const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || 'ws://localhost:3001';
 const AUDIO_TIMESLICE_MS = 1000; // Enviar áudio a cada 1 segundo
 
 type StreamingState = "idle" | "connecting" | "streaming" | "error" | "stopping";
@@ -49,19 +50,27 @@ export default function LinguaVoxPage() {
 
   const connectWebSocket = useCallback(() => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      console.log("WebSocket já está conectado.");
+      // Se já está conectado e tentando conectar de novo, provavelmente é um re-toggle.
+      // Poderia iniciar o streaming de áudio aqui se não estivesse já fazendo.
+      if (streamingState !== "streaming") {
+         setStreamingState("streaming"); // Garante que o estado reflita
+         startStreamingAudio();
+      }
       return;
     }
 
     setStreamingState("connecting");
     setError(null);
-    setTranslatedText("");
+    setTranslatedText(""); // Limpa traduções antigas ao reconectar
 
+    console.log(`Tentando conectar ao WebSocket em: ${WEBSOCKET_URL}`);
     const ws = new WebSocket(WEBSOCKET_URL);
     wsRef.current = ws;
 
     ws.onopen = () => {
       console.log("WebSocket connected");
-      setStreamingState("streaming");
+      // O estado é alterado para 'streaming' dentro de startStreamingAudio após o sucesso
       startStreamingAudio();
     };
 
@@ -75,48 +84,80 @@ export default function LinguaVoxPage() {
           setError(`Erro do servidor: ${message.error}`);
           // Não pararemos o streaming por erros de tradução individuais,
           // a menos que sejam fatais para a conexão.
+           toast({
+            title: "Erro de Tradução",
+            description: message.error,
+            variant: "destructive",
+          });
+        } else if (message.message) { // Mensagens informativas do servidor
+          console.log("Mensagem do servidor:", message.message);
+          toast({ title: "Info", description: message.message });
         }
       } catch (e) {
-        console.error("Failed to parse WebSocket message:", e);
+        console.error("Failed to parse WebSocket message:", e, "Data received:", event.data);
         //setError("Recebeu dados inválidos do servidor.");
       }
     };
 
     ws.onerror = (event) => {
       console.error("WebSocket error:", event);
-      setError("Falha na conexão com o servidor de tradução. Tente novamente.");
+      setError("Falha na conexão com o servidor de tradução. Verifique se o servidor WebSocket está rodando e acessível.");
       setStreamingState("error");
-      stopStreamingAudio(); // Garante que o microfone seja liberado
+      stopStreamingAudio(); 
+      toast({
+        title: "Erro de WebSocket",
+        description: `Não foi possível conectar a ${WEBSOCKET_URL}. Verifique o console do servidor WebSocket.`,
+        variant: "destructive",
+      });
     };
 
     ws.onclose = (event) => {
-      console.log("WebSocket disconnected", event.reason);
+      console.log("WebSocket disconnected", event.code, event.reason);
+      // Evita setar erro se a desconexão foi intencional (idle ou stopping)
       if (streamingState !== "idle" && streamingState !== "stopping") {
-        // Se a desconexão não foi intencional
-        // setError("Desconectado do servidor de tradução.");
-        // setStreamingState("error");
+        setError("Desconectado do servidor de tradução.");
+        setStreamingState("error");
       }
-      stopStreamingAudio(); // Garante que o microfone seja liberado
+      // Garante que o microfone seja liberado
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      // Não limpa wsRef.current aqui, pois pode ser usado para verificar o estado
     };
-  }, [sourceLanguage, targetLanguage, streamingState]); // Adicionado sourceLanguage e targetLanguage
+  }, [sourceLanguage, targetLanguage, streamingState, toast]);
 
   const startStreamingAudio = async () => {
-    if (!isMicrophoneSupported() || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      setError("Não é possível iniciar o streaming: microfone não suportado ou WebSocket não conectado.");
+    if (!isMicrophoneSupported()){
+      setError("Microfone não suportado.");
       setStreamingState("error");
+      return;
+    }
+    if(!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      setError("Não é possível iniciar o streaming: WebSocket não conectado.");
+      // Não muda o estado aqui, pois connectWebSocket pode estar tentando reconectar.
+      console.warn("Tentativa de iniciar áudio sem WebSocket conectado.");
       return;
     }
 
     try {
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+      setStreamingState("streaming"); // Mover para cá para indicar que o microfone foi acessado
+      toast({ title: "Microfone Ativado", description: "Iniciando transmissão de áudio."});
+
       mediaRecorderRef.current = new MediaRecorder(streamRef.current);
       audioChunksRef.current = [];
 
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
           audioChunksRef.current.push(event.data);
-          const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-          audioChunksRef.current = []; // Limpar para o próximo chunk
+          // Opcional: enviar chunks menores com mais frequência ou acumular um pouco mais
+          // Por enquanto, enviamos assim que disponível após o timeslice.
+          const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorderRef.current.mimeType || "audio/webm" });
+          audioChunksRef.current = [];
 
           const reader = new FileReader();
           reader.onloadend = () => {
@@ -137,12 +178,21 @@ export default function LinguaVoxPage() {
         }
       };
       
-      mediaRecorderRef.current.onstart = () => {
-        setStreamingState("streaming");
-      };
-
       mediaRecorderRef.current.onstop = () => {
-        // Lógica de parada já está em stopStreamingAudio e ws.onclose
+        // A lógica de parada está em stopStreamingAudio e no onclose do WebSocket
+        // console.log("MediaRecorder parado.");
+        // Se o WebSocket ainda estiver aberto e o estado for 'streaming', pode ser uma parada inesperada.
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && streamingState === "streaming") {
+            // console.warn("MediaRecorder parou inesperadamente enquanto ainda transmitia.");
+        }
+      };
+      
+      mediaRecorderRef.current.onerror = (event) => {
+        console.error("MediaRecorder error:", event);
+        setError("Erro com o gravador de mídia.");
+        setStreamingState("error");
+        stopStreamingAudio();
+        toast({ title: "Erro de Gravação", description: "Ocorreu um problema com o gravador de áudio.", variant: "destructive"});
       };
       
       mediaRecorderRef.current.start(AUDIO_TIMESLICE_MS);
@@ -158,27 +208,40 @@ export default function LinguaVoxPage() {
       setError(message);
       setStreamingState("error");
       toast({ title: "Erro de Microfone", description: message, variant: "destructive"});
-      if (wsRef.current) wsRef.current.close(); // Fecha o websocket se o microfone falhar
+      if (wsRef.current) wsRef.current.close(1006, "Microphone access failed");
     }
   };
 
   const stopStreamingAudio = useCallback(() => {
-    setStreamingState("stopping");
+    console.log("Parando streaming de áudio...");
+    setStreamingState("stopping"); // Indica que estamos no processo de parada
+
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
       mediaRecorderRef.current.stop();
+      console.log("MediaRecorder.stop() chamado.");
     }
+    // Não limpa mediaRecorderRef.current aqui, onstop pode precisar dele.
+
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
+      console.log("Trilhas de mídia paradas.");
     }
+
     if (wsRef.current) {
       if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+        console.log("Fechando WebSocket...");
         wsRef.current.close(1000, "Client initiated disconnect");
       }
-      wsRef.current = null;
+      // wsRef.current = null; // Limpa após ter certeza que foi fechado ou no onclose.
     }
-    setStreamingState("idle");
-  }, []);
+    
+    // Pequeno timeout para garantir que os processos de parada concluam antes de mudar para idle
+    setTimeout(() => {
+        setStreamingState("idle");
+        console.log("Streaming efetivamente parado, estado = idle.");
+    }, 500); // Ajuste conforme necessário
+  }, [streamingState]);
 
 
   const handleToggleStreaming = () => {
@@ -189,25 +252,23 @@ export default function LinguaVoxPage() {
     }
   };
   
-  // Limpeza ao desmontar o componente
   useEffect(() => {
     return () => {
+      console.log("Componente desmontando, parando streaming...");
       stopStreamingAudio();
     };
   }, [stopStreamingAudio]);
 
   const playTranslatedText = useCallback(() => {
     if (typeof window !== 'undefined' && translatedText && window.speechSynthesis) {
-      // Para o TTS anterior se estiver falando
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(translatedText);
-      // Tenta encontrar a voz correspondente ao targetLanguage
       const voices = window.speechSynthesis.getVoices();
       const targetVoice = voices.find(voice => voice.lang.startsWith(targetLanguage));
       if (targetVoice) {
         utterance.voice = targetVoice;
       } else {
-        utterance.lang = targetLanguage; // Fallback para o seletor de idioma do navegador
+        utterance.lang = targetLanguage; 
       }
       window.speechSynthesis.speak(utterance);
     } else if (translatedText) {
@@ -259,7 +320,11 @@ export default function LinguaVoxPage() {
                 id="source-language"
                 label="Idioma de Origem"
                 value={sourceLanguage}
-                onValueChange={setSourceLanguage}
+                onValueChange={(value) => {
+                  if (streamingState !== "streaming" && streamingState !== "connecting") {
+                    setSourceLanguage(value);
+                  }
+                }}
                 languages={supportedLanguages}
                 disabled={streamingState === "streaming" || streamingState === "connecting"}
               />
@@ -267,7 +332,11 @@ export default function LinguaVoxPage() {
                 id="target-language"
                 label="Idioma de Destino"
                 value={targetLanguage}
-                onValueChange={setTargetLanguage}
+                onValueChange={(value) => {
+                  if (streamingState !== "streaming" && streamingState !== "connecting") {
+                    setTargetLanguage(value);
+                  }
+                }}
                 languages={supportedLanguages}
                 disabled={streamingState === "streaming" || streamingState === "connecting"}
               />
@@ -305,7 +374,7 @@ export default function LinguaVoxPage() {
               <div className="mt-6 space-y-3">
                 <div className="flex justify-between items-center">
                   <h3 className="text-xl font-semibold font-headline">Tradução:</h3>
-                  <Button variant="ghost" size="icon" onClick={playTranslatedText} title="Ouvir tradução">
+                  <Button variant="ghost" size="icon" onClick={playTranslatedText} title="Ouvir tradução" disabled={!translatedText.trim()}>
                     <Volume2 className="h-5 w-5 text-primary"/>
                     <span className="sr-only">Ouvir áudio</span>
                   </Button>
@@ -329,4 +398,3 @@ export default function LinguaVoxPage() {
     </div>
   );
 }
-
