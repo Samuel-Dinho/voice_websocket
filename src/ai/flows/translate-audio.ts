@@ -29,10 +29,12 @@ const TranslateAudioOutputSchema = z.object({
 export type TranslateAudioOutput = z.infer<typeof TranslateAudioOutputSchema>;
 
 export async function translateAudio(input: TranslateAudioInput): Promise<TranslateAudioOutput> {
-  // console.log('[translateAudio Flow] Received input. audioDataUri (start):', input.audioDataUri.substring(0, 100) + "...");
+  console.log('[translateAudio Flow Invoked] Input audioDataUri (start):', input.audioDataUri.substring(0, 100) + "...");
   return translateAudioFlow(input);
 }
 
+/*
+// Comentando o ai.definePrompt para tentar uma abordagem mais stateless com ai.generate() diretamente
 const prompt = ai.definePrompt({
   name: 'translateAudioPrompt',
   input: {schema: TranslateAudioInputSchema},
@@ -41,6 +43,7 @@ const prompt = ai.definePrompt({
 Audio: {{media url=audioDataUri}}
 Translation:`,
 });
+*/
 
 const translateAudioFlow = ai.defineFlow(
   {
@@ -50,11 +53,40 @@ const translateAudioFlow = ai.defineFlow(
   },
   async (input: TranslateAudioInput) => {
     console.log('[translateAudioFlow] Processing input. audioDataUri (start):', input.audioDataUri.substring(0, 200) + "...");
-    const {output} = await prompt(input);
-    if (!output) {
-        console.error('[translateAudioFlow] Prompt did not return an output.');
-        throw new Error('Translation prompt failed to produce output.');
+    
+    try {
+      const {output} = await ai.generate({
+        prompt: [
+          {text: `You are a real-time audio translator. Translate the following audio from ${input.sourceLanguage} to ${input.targetLanguage}. Provide only the translated text.`},
+          {media: {url: input.audioDataUri}},
+          {text: "Translation:"}
+        ],
+        model: 'googleai/gemini-2.0-flash', // Especificando o modelo diretamente
+        output: {
+          format: 'json',
+          schema: TranslateAudioOutputSchema,
+        },
+        config: { // Adicionando uma seção de config se necessário, ex: safetySettings
+            // safetySettings: [ { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE'} ]
+        }
+      });
+
+      if (!output) {
+          console.error('[translateAudioFlow] ai.generate did not return an output.');
+          throw new Error('Translation generation failed to produce output.');
+      }
+      // O output já deve estar no formato de TranslateAudioOutputSchema devido ao output: {schema: ...}
+      return output;
+
+    } catch (error) {
+        console.error('[translateAudioFlow] Error during ai.generate:', error);
+        // Re-throw o erro para ser pego pelo chamador (websocket-server)
+        // ou retorne um objeto de erro estruturado, se preferir.
+        // Para manter o comportamento anterior:
+        if (error instanceof Error) {
+             throw new Error(`[GoogleGenerativeAI Error]: ${error.message}`);
+        }
+        throw new Error('Unknown error during AI generation.');
     }
-    return output;
   }
 );
