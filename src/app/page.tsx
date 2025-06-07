@@ -15,10 +15,10 @@ import { Separator } from "@/components/ui/separator";
 type StreamingState = "idle" | "recognizing" | "error" | "stopping";
 
 let recognition: SpeechRecognition | null = null;
-// let ws = useRef<WebSocket | null>(null); // MOVED INSIDE COMPONENT
 
 export default function LinguaVoxPage() {
-  const ws = useRef<WebSocket | null>(null); // MOVED HERE
+  const ws = useRef<WebSocket | null>(null);
+  const { toast } = useToast(); // Moved inside the component
   const [sourceLanguage, setSourceLanguage] = useState<string>("pt");
   const [targetLanguage, setTargetLanguage] = useState<string>("en");
   const [streamingState, setStreamingState] = useState<StreamingState>("idle");
@@ -27,8 +27,6 @@ export default function LinguaVoxPage() {
   const [translatedText, setTranslatedText] = useState<string>("");
   const [isTranslating, setIsTranslating] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-
-  const { toast } = useToast();
 
   const getWebSocketUrl = () => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -92,7 +90,7 @@ export default function LinguaVoxPage() {
         ws.current = null;
       }
     };
-  }, [streamingState, toast]);
+  }, [streamingState, toast]); // Added toast here as it's now part of component scope
 
   useEffect(() => {
     connectWebSocket();
@@ -105,7 +103,7 @@ export default function LinguaVoxPage() {
       ws.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [connectWebSocket]); // connectWebSocket will be stable due to its own deps
 
   const isSpeechRecognitionSupported = useCallback(() => {
     return typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
@@ -255,7 +253,7 @@ export default function LinguaVoxPage() {
         recognition.stop();
       }
     }
-  }, [sourceLanguage, targetLanguage, toast, streamingState, isSpeechRecognitionSupported, connectWebSocket]);
+  }, [sourceLanguage, targetLanguage, toast, streamingState, isSpeechRecognitionSupported, connectWebSocket]); // Added toast, connectWebSocket to deps
 
   const stopRecognition = useCallback(() => {
     console.log("[Client] Tentando parar reconhecimento...");
@@ -432,7 +430,3 @@ export default function LinguaVoxPage() {
     </div>
   );
 }
-
-    
-
-    
