@@ -21,12 +21,13 @@ wss.on('connection', (ws: WebSocket) => {
 
       if (!parsedData.audioDataUri || !parsedData.sourceLanguage || !parsedData.targetLanguage) {
         const errorMsg = 'Formato de mensagem inválido. Campos obrigatórios: audioDataUri, sourceLanguage, targetLanguage';
-        console.warn(`[WebSocketServer] Mensagem inválida recebida: ${dataString}`);
+        console.warn(`[WebSocketServer] Mensagem inválida recebida: ${dataString.substring(0,200)}...`); // Log início da string
         ws.send(JSON.stringify({ error: errorMsg }));
         return;
       }
       
-      console.log(`[WebSocketServer] Áudio recebido para tradução: ${parsedData.sourceLanguage} para ${parsedData.targetLanguage}. Tamanho dos dados de áudio: ${parsedData.audioDataUri.length}`);
+      const audioDataUriStart = parsedData.audioDataUri.substring(0, 100); // Log para checar o formato do data URI
+      console.log(`[WebSocketServer] Áudio recebido para tradução: ${parsedData.sourceLanguage} -> ${parsedData.targetLanguage}. audioDataUri (início): ${audioDataUriStart}... (tamanho total: ${parsedData.audioDataUri.length})`);
 
       const translationOutput = await translateAudio(parsedData);
       ws.send(JSON.stringify({ translatedText: translationOutput.translatedText }));
@@ -36,12 +37,13 @@ wss.on('connection', (ws: WebSocket) => {
       console.error('[WebSocketServer] Erro ao processar mensagem ou traduzir:', error);
       let errorMessage = 'Erro ao processar mensagem ou durante a tradução.';
       if (error instanceof Error) {
-          errorMessage = error.message;
+          errorMessage = error.message; // Captura a mensagem de erro específica
       }
+      // Tentar enviar erro específico para o cliente
       try {
-        ws.send(JSON.stringify({ error: errorMessage }));
+        ws.send(JSON.stringify({ error: `Erro do servidor: ${errorMessage}` }));
       } catch (sendError) {
-        console.error('[WebSocketServer] Erro ao enviar mensagem de erro para o cliente:', sendError);
+        console.error('[WebSocketServer] Erro crítico: Não foi possível enviar mensagem de erro para o cliente:', sendError);
       }
     }
   });
@@ -52,7 +54,7 @@ wss.on('connection', (ws: WebSocket) => {
   });
 
   ws.on('error', (error: Error) => {
-    console.error('[WebSocketServer] Erro na conexão WebSocket individual do cliente:', error);
+    console.error('[WebSocketServer] Erro na conexão WebSocket individual do cliente:', error.message, error);
   });
 
   try {
@@ -60,13 +62,12 @@ wss.on('connection', (ws: WebSocket) => {
     console.log('[WebSocketServer] Mensagem de boas-vindas enviada ao cliente.');
   } catch (sendError) {
     console.error('[WebSocketServer] Erro ao enviar mensagem de boas-vindas:', sendError);
-    // Considerar fechar a conexão se a mensagem de boas-vindas for crítica
-    // ws.close(1011, "Erro interno ao enviar mensagem inicial"); 
   }
 });
 
 wss.on('error', (error: Error) => {
-  console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error);
+  console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error.message, error);
 });
+    
 
     
