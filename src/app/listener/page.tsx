@@ -82,19 +82,33 @@ export default function ListenerPage() {
 
 
   const speakNextInQueue = useCallback(() => {
-    console.log(`[Listener] speakNextInQueue chamado. Audio Ativado: ${audioActivated}, Está Falando: ${isSpeaking}, Fila: ${utteranceQueueRef.current.length}`);
-    if (!audioActivated || isSpeaking || utteranceQueueRef.current.length === 0) {
-      if (utteranceQueueRef.current.length === 0 && isSpeaking && audioActivated) {
-        console.log("[Listener] Fila vazia e isSpeaking=true (áudio ativado), resetando isSpeaking para false.");
-        setIsSpeaking(false);
-      }
-      return;
+    console.log(`[Listener] speakNextInQueue chamado. Fila: ${utteranceQueueRef.current.length}, TTS Realmente Falando: ${window.speechSynthesis.speaking}, Nosso Estado isSpeaking: ${isSpeaking}, Audio Ativado: ${audioActivated}`);
+
+    if (!audioActivated) {
+        console.log("[Listener] Áudio não ativado. Não falando.");
+        if (isSpeaking) setIsSpeaking(false); // Garante que nosso estado reflita a realidade
+        return;
     }
 
-    setIsSpeaking(true);
+    if (window.speechSynthesis.speaking) {
+        console.log("[Listener] SpeechSynthesis já está falando. Não iniciando nova utterance.");
+        if (!isSpeaking) setIsSpeaking(true); // Sincroniza nosso estado se estiver dessincronizado
+        return;
+    }
+
+    if (utteranceQueueRef.current.length === 0) {
+        console.log("[Listener] Fila de utterances vazia.");
+        if (isSpeaking) setIsSpeaking(false); // Garante que nosso estado seja falso se a fila estiver vazia e nada estiver falando
+        return;
+    }
+
+    // Se chegamos aqui: áudio está ativado, TTS não está falando, e a fila tem itens.
+    // Portanto, devemos iniciar a fala.
+    
     const utterance = utteranceQueueRef.current.shift();
 
     if (utterance) {
+      setIsSpeaking(true); // Definimos nosso estado para indicar que estamos iniciando a fala.
       const targetLangLC = utterance.lang.toLowerCase();
       const targetLangPrefixLC = targetLangLC.split('-')[0]; 
 
@@ -128,16 +142,17 @@ export default function ListenerPage() {
       utterance.onstart = () => {
         console.log(`[Listener] Evento onstart: Síntese de fala iniciada para: "${utterance.text.substring(0,30)}..."`);
         setLastMessage(`Falando: "${utterance.text.substring(0,20)}..."`);
+        // setIsSpeaking(true); // Já definido antes de chamar speak()
       };
       utterance.onend = () => {
         console.log(`[Listener] Evento onend: Síntese de fala finalizada para: "${utterance.text.substring(0,30)}..."`);
-        setIsSpeaking(false);
+        // setIsSpeaking(false); // Não é mais necessário aqui, a próxima chamada de speakNextInQueue tratará o estado.
         speakNextInQueueRef.current(); 
       };
       utterance.onerror = (event) => {
         console.error(`[Listener] Evento onerror: Erro na síntese de fala: ${event.error}. Texto: "${utterance.text.substring(0,30)}..." Detalhes:`, event);
         setLastMessage(`Erro ao falar: ${event.error}`);
-        setIsSpeaking(false);
+        // setIsSpeaking(false); // Não é mais necessário aqui.
         speakNextInQueueRef.current(); 
       };
 
@@ -146,15 +161,15 @@ export default function ListenerPage() {
         window.speechSynthesis.speak(utterance);
       } catch (e) {
         console.error("[Listener] Erro direto ao chamar window.speechSynthesis.speak():", e);
-        setIsSpeaking(false);
+        setIsSpeaking(false); // Erro síncrono, resetamos nosso estado
         speakNextInQueueRef.current(); 
       }
 
     } else {
       console.warn("[Listener] speakNextInQueue: utterance era nula ou fila ficou vazia inesperadamente.");
-      setIsSpeaking(false); 
+      setIsSpeaking(false); // Se utterance for nula, garantimos que isSpeaking seja falso.
     }
-  }, [audioActivated, isSpeaking, availableVoices]); 
+  }, [audioActivated, isSpeaking, availableVoices, setIsSpeaking, setLastMessage]); 
 
   useEffect(() => {
     speakNextInQueueRef.current = speakNextInQueue;
@@ -166,6 +181,13 @@ export default function ListenerPage() {
     setLastMessage("Áudio ativado pelo usuário. Aguardando traduções...");
     console.log("[Listener] Áudio ativado pelo usuário. Tentando utterance de desbloqueio.");
     try {
+        // Garantir que a síntese de fala seja cancelada antes de tentar desbloquear
+        if (typeof window !== 'undefined' && window.speechSynthesis && window.speechSynthesis.speaking) {
+            window.speechSynthesis.cancel();
+        }
+        utteranceQueueRef.current = []; // Limpa a fila antes do desbloqueio
+        setIsSpeaking(false); // Reseta o estado de fala
+
         const unlockUtterance = new SpeechSynthesisUtterance(" "); 
         unlockUtterance.volume = 0.01; 
         const englishVoice = availableVoices.find(v => v.lang.toLowerCase().startsWith("en") && v.default) || availableVoices.find(v => v.lang.toLowerCase().startsWith("en"));
@@ -189,7 +211,7 @@ export default function ListenerPage() {
         console.error("[Listener] Erro ao tentar utterance de desbloqueio de áudio:", e);
         speakNextInQueueRef.current(); 
     }
-  }, [availableVoices]);
+  }, [availableVoices, setIsSpeaking]);
 
 
   useEffect(() => {
@@ -237,9 +259,12 @@ export default function ListenerPage() {
           setLastMessage(`Texto traduzido recebido para ${serverMessage.targetLanguage}: "${serverMessage.text.substring(0,30)}..." (${new Date().toLocaleTimeString()})`);
 
           const textToSpeak = serverMessage.text;
-          const sentences = textToSpeak.match(/[^.!?]+[.!?]+|\s*[^.!?]+$/g) || [];
+          // Regex melhorada para lidar com mais casos, incluindo texto sem pontuação final.
+          const sentences = textToSpeak.match(/[^.!?]+(?:[.!?]+["']?|$)/g) || [];
+
 
           if (sentences.length === 0 && textToSpeak.trim()) {
+             // Se a regex não encontrar nada mas o texto não estiver vazio, trata o texto inteiro como uma sentença.
             sentences.push(textToSpeak.trim());
           }
           
@@ -258,7 +283,7 @@ export default function ListenerPage() {
             console.log(`[Listener] ${utterancesAddedCount} utterance(s) adicionada(s) à fila. Tamanho total da fila: ${utteranceQueueRef.current.length} para o texto original: "${textToSpeak.substring(0, 50)}..."`);
             speakNextInQueueRef.current();
           } else {
-             console.warn(`[Listener] Nenhuma utterance adicionada à fila para o texto: "${textToSpeak.substring(0, 50)}..."`);
+             console.warn(`[Listener] Nenhuma utterance adicionada à fila para o texto: "${textToSpeak.substring(0, 50)}..." (Sentenças detectadas: ${sentences.length})`);
           }
 
         } else if (serverMessage.message) { 
@@ -331,7 +356,7 @@ export default function ListenerPage() {
       setIsSpeaking(false); 
       console.log("[Listener] Cleanup do useEffect principal finalizado.");
     };
-  }, []); 
+  }, [setIsSpeaking]); // Adicionado setIsSpeaking como dependência
 
 
   return (
@@ -423,4 +448,3 @@ export default function ListenerPage() {
     </div>
   );
 }
-
