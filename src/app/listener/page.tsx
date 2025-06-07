@@ -26,32 +26,44 @@ export default function ListenerPage() {
   };
 
   useEffect(() => {
-    const loadVoices = () => {
+    const updateVoices = () => {
       const voices = window.speechSynthesis.getVoices();
       if (voices.length > 0) {
         setAvailableVoices(voices);
         console.log("[Listener] Vozes de síntese carregadas:", voices.length, voices.map(v => ({name: v.name, lang: v.lang, default: v.default})));
       } else {
-        console.log("[Listener] Lista de vozes vazia, aguardando onvoiceschanged.");
+        console.log("[Listener] Lista de vozes vazia, onvoiceschanged pode não ter disparado ainda ou não há vozes.");
       }
     };
 
-    loadVoices();
+    updateVoices(); // Attempt to load voices initially
+
     if (window.speechSynthesis.onvoiceschanged !== undefined) {
-      window.speechSynthesis.onvoiceschanged = loadVoices;
+      window.speechSynthesis.onvoiceschanged = updateVoices;
     } else {
-        if(availableVoices.length === 0) { // Check against current state
-            console.warn("[Listener] onvoiceschanged não suportado ou já disparado, tentando carregar vozes com setTimeout.");
-            setTimeout(loadVoices, 500); // Try again after a short delay
+      console.warn("[Listener] onvoiceschanged não suportado. Usando fallback de intervalo para carregar vozes.");
+      const fallbackInterval = setInterval(() => {
+        const voices = window.speechSynthesis.getVoices();
+        if (voices.length > 0) {
+          updateVoices();
+          clearInterval(fallbackInterval);
         }
+      }, 500);
+      return () => clearInterval(fallbackInterval); // Cleanup interval
     }
+
+    return () => { // Cleanup onvoiceschanged
+      if (window.speechSynthesis.onvoiceschanged !== undefined) {
+        window.speechSynthesis.onvoiceschanged = null;
+      }
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty dependency array: run once on mount.
+  }, []);
 
 
   const speakNextInQueue = () => {
     if (!audioActivated || isSpeaking || utteranceQueueRef.current.length === 0) {
-      if (utteranceQueueRef.current.length === 0) {
+      if (utteranceQueueRef.current.length === 0 && isSpeaking) {
         setIsSpeaking(false); 
       }
       return;
@@ -59,7 +71,41 @@ export default function ListenerPage() {
 
     setIsSpeaking(true);
     const utterance = utteranceQueueRef.current.shift();
+
     if (utterance) {
+      // Voice selection logic moved here, using current `availableVoices` state
+      const targetLangLC = utterance.lang.toLowerCase(); // utterance.lang was set to targetLanguage in onmessage
+      const targetLangPrefixLC = targetLangLC.split('-')[0];
+
+      if (availableVoices.length > 0) {
+        console.log(`[Listener] Procurando voz para: ${targetLangLC} (prefixo: ${targetLangPrefixLC}) em ${availableVoices.length} vozes disponíveis no momento de falar.`);
+      } else {
+        console.warn(`[Listener] `availableVoices` está vazio no momento de falar. Texto: "${utterance.text.substring(0,30)}..."`);
+      }
+
+      let voice = availableVoices.find(v => 
+        v.lang.toLowerCase().startsWith(targetLangPrefixLC) && v.default === true
+      );
+      if (!voice) {
+        voice = availableVoices.find(v => 
+          v.lang.toLowerCase().startsWith(targetLangPrefixLC)
+        );
+      }
+      if (!voice && targetLangLC !== targetLangPrefixLC) { 
+        voice = availableVoices.find(v => v.lang.toLowerCase() === targetLangLC);
+      }
+      
+      if (voice) {
+        utterance.voice = voice;
+        utterance.lang = voice.lang; // Use the voice's specific lang tag
+        console.log(`[Listener] Voz encontrada e definida: ${voice.name} (${voice.lang}) para o texto: "${utterance.text.substring(0,30)}..."`);
+      } else {
+        // utterance.lang is already set to targetLanguage from onmessage
+        const voiceCount = availableVoices.length; // This will now reflect the current state
+        console.warn(`[Listener] Nenhuma voz específica encontrada para ${utterance.lang} nas ${voiceCount} vozes disponíveis. Usando padrão do navegador para o idioma (${utterance.lang}). Texto: "${utterance.text.substring(0,30)}..."`);
+      }
+      // End of voice selection logic
+      
       console.log("[Listener] Tentando falar:", utterance.text.substring(0, 30) + "...", "Idioma:", utterance.lang, "Voz:", utterance.voice?.name);
       
       utterance.onstart = () => {
@@ -88,26 +134,21 @@ export default function ListenerPage() {
     setAudioActivated(true);
     setLastMessage("Áudio ativado pelo usuário. Aguardando traduções...");
     console.log("[Listener] Áudio ativado pelo usuário.");
-    // Play a short, silent utterance to "unlock" audio on some browsers
-    // This needs to be directly in the user interaction call stack.
     try {
-        const unlockUtterance = new SpeechSynthesisUtterance(" "); // A space is often enough
-        unlockUtterance.volume = 0.01; // Very low volume
-        unlockUtterance.lang = "en-US"; // A common default
+        const unlockUtterance = new SpeechSynthesisUtterance(" "); 
+        unlockUtterance.volume = 0.01; 
+        unlockUtterance.lang = "en-US"; 
         unlockUtterance.onend = () => {
             console.log("[Listener] Utterance de desbloqueio de áudio finalizada.");
-            // Now that audio is "unlocked", try to speak anything pending
             speakNextInQueue();
         };
         unlockUtterance.onerror = (event) => {
             console.error("[Listener] Erro na utterance de desbloqueio de áudio:", event.error, "Evento completo:", event);
-            // Still try to speak pending items, maybe the main ones will work
             speakNextInQueue();
         };
         window.speechSynthesis.speak(unlockUtterance);
     } catch (e) {
         console.error("[Listener] Erro ao tentar utterance de desbloqueio de áudio:", e);
-        // If even the unlock fails, subsequent speaks might also fail, but we still try.
         speakNextInQueue();
     }
   };
@@ -139,39 +180,7 @@ export default function ListenerPage() {
           setLastMessage(`Texto traduzido recebido para ${serverMessage.targetLanguage} (${new Date().toLocaleTimeString()})`);
           
           const utterance = new SpeechSynthesisUtterance(serverMessage.text);
-          
-          const targetLangLC = serverMessage.targetLanguage.toLowerCase();
-          const targetLangPrefixLC = targetLangLC.split('-')[0];
-
-          if (availableVoices.length > 0) {
-            console.log('[Listener] Procurando voz para:', targetLangLC, '(prefixo:', targetLangPrefixLC, ') em', availableVoices.length, 'vozes.');
-            // console.log('[Listener] Vozes disponíveis no momento da seleção:', availableVoices.map(v => ({ name: v.name, lang: v.lang, default: v.default })));
-          }
-
-
-          let voice = availableVoices.find(v => 
-            v.lang.toLowerCase().startsWith(targetLangPrefixLC) && v.default === true
-          );
-
-          if (!voice) {
-            voice = availableVoices.find(v => 
-              v.lang.toLowerCase().startsWith(targetLangPrefixLC)
-            );
-          }
-          
-          if (!voice && targetLangLC !== targetLangPrefixLC) { // If targetLang was specific (e.g. en-gb) and not found by prefix
-            voice = availableVoices.find(v => v.lang.toLowerCase() === targetLangLC);
-          }
-          
-          if (voice) {
-            utterance.voice = voice;
-            utterance.lang = voice.lang; // Use the voice's specific lang tag
-            console.log(`[Listener] Voz encontrada e definida: ${voice.name} (${voice.lang}) para o texto: "${serverMessage.text.substring(0,30)}..."`);
-          } else {
-            utterance.lang = serverMessage.targetLanguage; // Set the target language on the utterance
-            const voiceCount = availableVoices.length;
-            console.warn(`[Listener] Nenhuma voz específica encontrada para ${serverMessage.targetLanguage} nas ${voiceCount} vozes disponíveis. Usando padrão do navegador para o idioma (${utterance.lang}). Texto: "${serverMessage.text.substring(0,30)}..."`);
-          }
+          utterance.lang = serverMessage.targetLanguage; // Set initial lang, specific voice will be picked in speakNextInQueue
           
           utteranceQueueRef.current.push(utterance);
           if (audioActivated && !isSpeaking) {
@@ -202,7 +211,7 @@ export default function ListenerPage() {
     ws.current.onclose = (event) => {
       console.log(`[Listener] WebSocket desconectado. Código: ${event.code}, Limpo: ${event.wasClean}, Razão: ${event.reason}`);
       setListenerState("disconnected");
-      if (event.code !== 1000) { // 1000 is normal closure
+      if (event.code !== 1000) { 
         setLastMessage("Desconectado. Tente recarregar a página.");
       } else {
         setLastMessage("Desconectado do servidor.");
@@ -226,10 +235,9 @@ export default function ListenerPage() {
       }
       utteranceQueueRef.current = [];
       setIsSpeaking(false); 
-      // setAudioActivated(false); // Don't reset audioActivated on unmount
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // availableVoices was removed to prevent re-connects
+  }, []); 
 
   return (
     <div className="flex flex-col items-center min-h-screen p-4 md:p-8 bg-background text-foreground">
@@ -308,7 +316,7 @@ export default function ListenerPage() {
             )}
             {audioActivated && availableVoices.length > 0 && !isSpeaking && utteranceQueueRef.current.length === 0 && (
                  <p className="text-xs text-muted-foreground text-center mt-2">
-                    Microfone de áudio ativado. {availableVoices.length} vozes de síntese disponíveis.
+                    Áudio ativado. {availableVoices.length} vozes de síntese disponíveis.
                 </p>
             )}
           </CardContent>
