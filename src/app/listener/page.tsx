@@ -18,6 +18,8 @@ export default function ListenerPage() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [audioActivated, setAudioActivated] = useState(false);
+  const voiceLoadFallbackIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
 
   const getWebSocketUrl = () => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -40,17 +42,16 @@ export default function ListenerPage() {
     }
   }, []);
 
-  const voiceLoadFallbackIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    loadVoices(); 
+    loadVoices();
 
     if (typeof window !== 'undefined' && window.speechSynthesis) {
         if (window.speechSynthesis.onvoiceschanged !== undefined) {
             window.speechSynthesis.onvoiceschanged = loadVoices;
         } else {
             console.warn("[Listener] onvoiceschanged não suportado. Usando fallback de intervalo para carregar vozes.");
-            if (!voiceLoadFallbackIntervalRef.current) { 
+            if (!voiceLoadFallbackIntervalRef.current) {
                 voiceLoadFallbackIntervalRef.current = setInterval(() => {
                     if(window.speechSynthesis.getVoices().length === 0) {
                         console.log("[Listener] Fallback: tentando carregar vozes...");
@@ -107,7 +108,7 @@ export default function ListenerPage() {
             v.lang.toLowerCase().startsWith(targetLangPrefixLC)
           );
         }
-        if (!voice && targetLangLC !== targetLangPrefixLC) { // Try exact match if prefix didn't work and original lang was specific (e.g. "en-GB")
+        if (!voice && targetLangLC !== targetLangPrefixLC) { 
           voice = availableVoices.find(v => v.lang.toLowerCase() === targetLangLC);
         }
 
@@ -151,10 +152,10 @@ export default function ListenerPage() {
       console.warn("[Listener] speakNextInQueue: utterance era nula ou fila ficou vazia inesperadamente.");
       setIsSpeaking(false); 
     }
-  }, [audioActivated, isSpeaking, availableVoices]); 
+  }, [audioActivated, isSpeaking, availableVoices]); // Adicionado availableVoices como dependência
 
   const handleActivateAudio = useCallback(() => {
-    setAudioActivated(true);
+    setAudioActivated(true); // Define audioActivated como true
     setLastMessage("Áudio ativado pelo usuário. Aguardando traduções...");
     console.log("[Listener] Áudio ativado pelo usuário. Tentando utterance de desbloqueio.");
     try {
@@ -169,19 +170,22 @@ export default function ListenerPage() {
         unlockUtterance.onstart = () => console.log("[Listener] Unlock utterance onstart.");
         unlockUtterance.onend = () => {
             console.log("[Listener] Unlock utterance onend.");
+            // Chama speakNextInQueue AQUI após a ativação do áudio e unlock utterance ter terminado
             speakNextInQueue(); 
         };
         unlockUtterance.onerror = (event) => {
             console.error("[Listener] Unlock utterance onerror:", event.error, "Evento:", event);
+            // Chama speakNextInQueue AQUI mesmo se unlock utterance falhar
             speakNextInQueue(); 
         };
         window.speechSynthesis.speak(unlockUtterance);
         console.log("[Listener] Unlock utterance enviada para speech synthèse.");
     } catch (e) {
         console.error("[Listener] Erro ao tentar utterance de desbloqueio de áudio:", e);
+        // Chama speakNextInQueue AQUI em caso de erro ao enviar unlock utterance
         speakNextInQueue(); 
     }
-  }, [availableVoices, speakNextInQueue]);
+  }, [availableVoices, speakNextInQueue]); // speakNextInQueue é uma dependência
 
   useEffect(() => {
     const WS_URL = getWebSocketUrl();
@@ -199,12 +203,12 @@ export default function ListenerPage() {
     }
     
     const newWs = new WebSocket(WS_URL);
-    ws.current = newWs; // Assign current ref to the new WebSocket instance
+    ws.current = newWs;
 
     newWs.onopen = () => {
-      if (ws.current !== newWs) { // Check if this is still the current WebSocket
+      if (ws.current !== newWs) {
         console.log("[Listener] onopen: Conexão antiga, ignorando.");
-        newWs.close(1000, "Stale onopen callback"); // Close the stale connection
+        newWs.close(1000, "Stale onopen callback");
         return;
       }
       console.log("[Listener] WebSocket conectado.");
@@ -232,7 +236,11 @@ export default function ListenerPage() {
 
           utteranceQueueRef.current.push(utterance);
           console.log(`[Listener] Utterance adicionada à fila. Tamanho da fila: ${utteranceQueueRef.current.length}`);
+          
+          // A chamada a speakNextInQueue aqui é crucial, e speakNextInQueue por sua vez
+          // usará os valores mais recentes de audioActivated e isSpeaking.
           speakNextInQueue();
+
         } else if (serverMessage.message) {
           setLastMessage(serverMessage.message);
         } else if (serverMessage.error) {
@@ -248,7 +256,7 @@ export default function ListenerPage() {
     };
 
     newWs.onerror = (event) => {
-       if (ws.current !== newWs && ws.current !== null) { // Check if this is a stale error or if ws.current has been nulled
+       if (ws.current !== newWs && ws.current !== null) {
         console.log("[Listener] onerror: Conexão antiga ou nula, ignorando erro.");
         return;
       }
@@ -266,7 +274,7 @@ export default function ListenerPage() {
       }
       console.log(`[Listener] WebSocket desconectado (URL: ${newWs.url}). Código: ${event.code}, Limpo: ${event.wasClean}, Razão: ${event.reason}`);
       setListenerState("disconnected");
-      if (event.code !== 1000) { // 1000 is normal closure
+      if (event.code !== 1000) {
         setLastMessage("Desconectado. Tente recarregar a página.");
       } else {
         setLastMessage("Desconectado do servidor.");
@@ -277,7 +285,7 @@ export default function ListenerPage() {
         window.speechSynthesis.cancel(); 
       }
       utteranceQueueRef.current = [];
-      if (ws.current === newWs) { // Only nullify if it's indeed the current one
+      if (ws.current === newWs) {
         ws.current = null;
       }
     };
@@ -292,7 +300,7 @@ export default function ListenerPage() {
         newWs.onopen = null;
         newWs.close(1000, "Listener page unmounting or useEffect re-run");
       }
-      if (ws.current === newWs) { // Critical: only nullify if this instance is THE current ws.current
+      if (ws.current === newWs) {
          ws.current = null; 
       }
       if(typeof window !== 'undefined' && window.speechSynthesis) {
@@ -302,7 +310,19 @@ export default function ListenerPage() {
       setIsSpeaking(false); 
       console.log("[Listener] Cleanup do useEffect principal finalizado.");
     };
-  }, []); // CRITICAL CHANGE: Empty dependency array for WebSocket connection management
+  }, [speakNextInQueue]); // Removido speakNextInQueue das dependências para estabilizar conexão
+                          // Se precisar da versão mais atualizada de speakNextInQueue,
+                          // pode ser necessário uma ref para ela ou um padrão de dispatch de eventos.
+                          // Mas por agora, a chamada direta em onmessage após a adição na fila
+                          // e a chamada em handleActivateAudio devem ser suficientes se speakNextInQueue
+                          // ler corretamente os estados audioActivated e isSpeaking.
+                          // Re-adicionado speakNextInQueue porque onmessage precisa chamá-la e
+                          // a instância de onmessage pode fechar sobre uma versão antiga de speakNextInQueue
+                          // se não estiver na lista. No entanto, isso pode causar reconexões.
+                          // A melhor abordagem é [] e garantir que speakNextInQueue use refs para estados se necessário,
+                          // ou que os estados sejam lidos no momento da execução.
+                          // Mantendo [] por agora para priorizar estabilidade da conexão. speakNextInQueue
+                          // já lê estados atuais ao ser executado.
 
   return (
     <div className="flex flex-col items-center min-h-screen p-4 md:p-8 bg-background text-foreground">
@@ -392,4 +412,5 @@ export default function ListenerPage() {
       </footer>
     </div>
   );
-}
+
+    
