@@ -5,18 +5,18 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Mic, MicOff, Loader2, AlertTriangle, LanguagesIcon, PlaySquare } from "lucide-react";
+import { Mic, MicOff, Loader2, AlertTriangle, LanguagesIcon } from "lucide-react";
 import { LanguageSelector } from "@/components/LanguageSelector";
 import { supportedLanguages } from "@/lib/languages";
 import { useToast } from "@/hooks/use-toast";
 import { LinguaVoxLogo } from "@/components/icons/LinguaVoxLogo";
 import { Separator } from "@/components/ui/separator";
-import Link from "next/link";
+import Link from "next/link"; // Importado, mas não usado diretamente com legacyBehavior
 
 type StreamingState = "idle" | "recognizing" | "error" | "stopping";
 
 let recognition: any | null = null;
-const END_OF_SPEECH_TIMEOUT_MS = 2500;
+const END_OF_SPEECH_TIMEOUT_MS = 1500; // Reduzido de 2500ms
 
 
 export default function LinguaVoxPage() {
@@ -103,6 +103,11 @@ export default function LinguaVoxPage() {
       console.log(`[Client] WebSocket desconectado (client-side). Código: ${event.code}, Razão: "${event.reason}", Foi Limpo: ${event.wasClean}.`);
       if (ws.current && ws.current === event.target) {
         ws.current = null;
+      }
+       if (streamingStateRef.current !== "idle" && streamingStateRef.current !== "error" && event.code !== 1000) {
+        setError("Conexão WebSocket perdida. Tente reiniciar a transcrição.");
+        toast({ title: "Conexão Perdida", description: "A conexão com o servidor foi interrompida.", variant: "destructive" });
+        if(streamingStateRef.current !== "error") setStreamingState("error");
       }
     };
   }, [toast]);
@@ -209,6 +214,7 @@ export default function LinguaVoxPage() {
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
       console.warn("[Client] WebSocket não está aberto. Tentando reconectar e enviar.");
       connectWebSocket();
+      // Adiciona uma pequena espera para a reconexão.
       await new Promise(resolve => setTimeout(resolve, 500)); 
       if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
           setError("Conexão perdida. Não foi possível enviar dados. Tente novamente.");
@@ -313,13 +319,12 @@ export default function LinguaVoxPage() {
     console.log(`[Client] Tentando iniciar/reiniciar reconhecimento (startRecognition). Estado atual: ${streamingStateRef.current} Idioma Fonte: ${sourceLanguage}`);
     
     setStreamingState("recognizing"); 
+    // streamingStateRef.current será atualizado pelo useEffect
         
     if (!isSpeechRecognitionSupported()) { setError("Reconhecimento não suportado"); setStreamingState("error"); return; }
     if (!supportedMimeType) { setError("Formato de áudio não suportado"); setStreamingState("error"); return; }
 
     // Não limpar transcribedText e translatedText aqui para manter o histórico na tela.
-    // setTranscribedText(""); 
-    // setTranslatedText("");
     setInterimTranscribedText("");
     accumulatedInterimRef.current = "";
     if (endOfSpeechTimerRef.current) clearTimeout(endOfSpeechTimerRef.current);
@@ -340,12 +345,11 @@ export default function LinguaVoxPage() {
 
     const mediaRecorderStarted = await startMediaRecorder();
     if (!mediaRecorderStarted) {
-      if(streamingStateRef.current !== "error") setStreamingState("error");
+      if(streamingStateRef.current !== "error") setStreamingState("error"); // Já definido dentro de startMediaRecorder
       return;
     }
 
-    // Toast é mostrado apenas na primeira vez que o microfone é ativado, ou após um erro.
-    if (streamingStateRef.current !== "recognizing" || error) {
+    if (streamingStateRef.current === "recognizing" && !error) { // Verifica o ref aqui, pois o state pode não ter atualizado ainda
         toast({ title: "Microfone Ativado", description: "Iniciando reconhecimento e gravação..." });
     }
 
@@ -405,17 +409,18 @@ export default function LinguaVoxPage() {
             mediaRecorderRef.current.onstop = async () => {
                 console.log(`[Client] MediaRecorder.onstop (para final_transcript): "${finalTranscriptForThisSegment}"`);
                 await sendDataToServer(finalTranscriptForThisSegment);
-                if (recognition) recognition.stop();
+                // O reinício do SR agora é gerenciado pelo onend se streamingStateRef.current === "recognizing"
+                if (recognition && typeof recognition.stop === 'function') recognition.stop();
             };
             try { mediaRecorderRef.current.stop(); } catch(e) { 
                 console.warn("Erro ao parar MR para final transcript:", e); 
                 await sendDataToServer(finalTranscriptForThisSegment); 
-                if(recognition) recognition.stop();
+                if(recognition && typeof recognition.stop === 'function') recognition.stop();
             }
         } else {
             console.warn(`[Client] MediaRecorder não gravando ou nulo para final_transcript: "${finalTranscriptForThisSegment}". Estado: ${mediaRecorderRef.current?.state}. Chunks: ${audioChunksRef.current.length}. Tentando enviar e parar SR.`);
             await sendDataToServer(finalTranscriptForThisSegment); 
-            if (recognition) recognition.stop(); 
+            if (recognition && typeof recognition.stop === 'function') recognition.stop(); 
         }
       } else if (currentEventInterimTranscript) {
         accumulatedInterimRef.current = currentEventInterimTranscript;
@@ -434,17 +439,17 @@ export default function LinguaVoxPage() {
                 mediaRecorderRef.current.onstop = async () => {
                     console.log(`[Client] MediaRecorder.onstop (para timeout interino): "${interimToProcess}"`);
                     await sendDataToServer(interimToProcess);
-                    if (recognition) recognition.stop(); 
+                    if (recognition && typeof recognition.stop === 'function') recognition.stop(); 
                 };
                 try { mediaRecorderRef.current.stop(); } catch(e) { 
                     console.warn("Erro ao parar MR para timeout interino:", e); 
                     await sendDataToServer(interimToProcess);
-                    if(recognition) recognition.stop();
+                    if(recognition && typeof recognition.stop === 'function') recognition.stop();
                 }
             } else {
                 console.warn(`[Client] MediaRecorder não gravando ou nulo para timeout interino: "${interimToProcess}". Estado: ${mediaRecorderRef.current?.state}. Tentando enviar e parar SR.`);
                 await sendDataToServer(interimToProcess);
-                if (recognition) recognition.stop(); 
+                if (recognition && typeof recognition.stop === 'function') recognition.stop(); 
             }
           }
         }, END_OF_SPEECH_TIMEOUT_MS);
@@ -458,15 +463,24 @@ export default function LinguaVoxPage() {
       if (event.error === 'no-speech' && streamingStateRef.current === "recognizing") {
         console.log("[Client] SR.onerror: Erro 'no-speech'. Tentando reiniciar via onend.");
         if (recognition) {
+          recognition.onend = () => { // Redefine onend para garantir que ele tente reiniciar
+             console.log(`[Client] SpeechRecognition.onend (após no-speech) disparado. Estado (ref): ${streamingStateRef.current}`);
+             if (streamingStateRef.current === "recognizing") {
+                console.log("[Client] SR.onend (após no-speech): Estado é 'recognizing'. Reiniciando o ciclo...");
+                startRecognition(); 
+             } else {
+                console.log(`[Client] SR.onend (após no-speech): Estado é ${streamingStateRef.current}. Não reiniciando. Chamando stopRecInternals.`);
+                stopRecognitionInternals();
+             }
+          };
           recognition.stop();
         } else {
-          // Caso improvável, mas se recognition for nulo, tenta reiniciar diretamente.
+          // Caso improvável de recognition ser null aqui, mas se for, tenta um reinício direto.
           await startRecognition();
         }
         return; 
       }
       
-      // Se não for 'no-speech' recuperável, ou se não estivermos 'recognizing':
       let errMessage = `Erro no reconhecimento: ${event.error}`;
       const interimOnError = accumulatedInterimRef.current.trim();
       if (interimOnError && (event.error === 'network' || event.error === 'audio-capture')) {
@@ -490,12 +504,11 @@ export default function LinguaVoxPage() {
       }
       
       setError(errMessage);
-      setStreamingState("error"); // Define o estado como erro aqui para erros não recuperáveis.
+      setStreamingState("error"); 
       
       if(recognition) {
-        // Remove onend para evitar loop se o stop() aqui acionar um onend que tenta reiniciar
         recognition.onend = null; 
-        recognition.stop(); 
+        if (typeof recognition.stop === 'function') recognition.stop(); 
       }
       stopRecognitionInternals(); 
 
@@ -530,10 +543,10 @@ export default function LinguaVoxPage() {
       console.error("[Client] Erro ao chamar recognition.start():", e);
       setError(`Erro ao iniciar reconhecimento: ${e.message}`);
       setStreamingState("error");
-      if (recognition) { recognition.onend = null; recognition.stop(); }
+      if (recognition) { recognition.onend = null; if(typeof recognition.stop === 'function') recognition.stop(); }
       stopRecognitionInternals();
     }
-  }, [isSpeechRecognitionSupported, supportedMimeType, sourceLanguage, sendDataToServer, stopRecognitionInternals, connectWebSocket, toast, startMediaRecorder, error]); // Adicionado 'error' à lista de dependências
+  }, [isSpeechRecognitionSupported, supportedMimeType, sourceLanguage, sendDataToServer, stopRecognitionInternals, connectWebSocket, toast, startMediaRecorder, error]);
 
 
   const stopRecognition = useCallback(async () => {
@@ -548,6 +561,7 @@ export default function LinguaVoxPage() {
     }
 
     setStreamingState("stopping"); 
+    // streamingStateRef.current será atualizado pelo useEffect
     
     if (endOfSpeechTimerRef.current) clearTimeout(endOfSpeechTimerRef.current);
 
@@ -562,33 +576,35 @@ export default function LinguaVoxPage() {
             mediaRecorderRef.current.onstop = async () => {
                 console.log(`[Client] MR.onstop durante stopRecognition para interino: "${interimToProcessOnStop}"`);
                 await sendDataToServer(interimToProcessOnStop);
-                if (recognition) {
-                    recognition.stop(); 
+                if (recognition && typeof recognition.stop === 'function') {
+                    recognition.stop(); // Acionará onend que chamará stopRecognitionInternals
                 } else {
-                    stopRecognitionInternals();
+                    stopRecognitionInternals(); // Se SR já estiver parado/nulo
                 }
             };
             try { mediaRecorderRef.current.stop(); } catch (e) { 
                 console.warn("Error stopping MR during stopRecognition for interim", e); 
                 await sendDataToServer(interimToProcessOnStop); 
-                if(recognition) {
+                if(recognition && typeof recognition.stop === 'function') {
                     recognition.stop(); 
                 } else {
                     stopRecognitionInternals();
                 }
             }
         } else {
+           // Se MR não estiver gravando, envia o texto e para SR (que chamará stopRecognitionInternals)
            await sendDataToServer(interimToProcessOnStop);
-           if (recognition) {
+           if (recognition && typeof recognition.stop === 'function') {
                 recognition.stop(); 
             } else {
                 stopRecognitionInternals();
             }
         }
-    } else if (recognition) {
+    } else if (recognition && typeof recognition.stop === 'function') {
         console.log("[Client] stopRecognition: Sem interino. Chamando recognition.stop().");
-        recognition.stop(); 
+        recognition.stop(); // Acionará onend que chamará stopRecognitionInternals
     } else {
+        // Se SR for nulo (improvável se estamos "recognizing" ou "stopping"), chama stopRecognitionInternals diretamente.
         console.log("[Client] stopRecognition: recognition é nulo. Chamando stopRecognitionInternals para garantir limpeza e estado idle.");
         stopRecognitionInternals(); 
     }
@@ -600,6 +616,12 @@ export default function LinguaVoxPage() {
     if (streamingStateRef.current === "recognizing") {
       stopRecognition();
     } else if (streamingStateRef.current === "idle" || streamingStateRef.current === "error") {
+      // Limpa textos e erros anteriores antes de um novo início
+      // setTranscribedText(""); // Removido para manter histórico
+      // setTranslatedText(""); // Removido para manter histórico
+      // setInterimTranscribedText(""); // Já limpo em startRecognition
+      // setError(null); // Já limpo em startRecognition
+      
       if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
         console.log("[Client] WebSocket não conectado ou fechado. Tentando reconectar antes de iniciar...");
         connectWebSocket();
@@ -645,8 +667,9 @@ export default function LinguaVoxPage() {
           Transcrição e Tradução de Áudio em Tempo Real
         </p>
          <div className="text-center mt-2">
-           <Link href="/listener" className="text-sm text-primary hover:underline flex items-center justify-center gap-1">
-                <PlaySquare size={16} />
+           {/* Link corrigido para não usar legacyBehavior */}
+            <Link href="/listener" className="text-sm text-primary hover:underline flex items-center justify-center gap-1">
+                <Mic size={16}/> {/* Mantido Mic como exemplo, poderia ser PlaySquare ou similar */}
                 Ir para a Página do Ouvinte
             </Link>
         </div>
