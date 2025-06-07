@@ -61,12 +61,12 @@ const translateAudioFlow = ai.defineFlow(
           {media: {url: input.audioDataUri}},
           {text: "Translation:"}
         ],
-        model: 'googleai/gemini-2.0-flash', // Especificando o modelo diretamente
+        // model: 'googleai/gemini-2.0-flash', // Removido - confiando no modelo global do genkit.ts
         output: {
           format: 'json',
           schema: TranslateAudioOutputSchema,
         },
-        config: { // Adicionando uma seção de config se necessário, ex: safetySettings
+        config: { 
             // safetySettings: [ { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE'} ]
         }
       });
@@ -75,18 +75,13 @@ const translateAudioFlow = ai.defineFlow(
           console.error('[translateAudioFlow] ai.generate did not return an output.');
           throw new Error('Translation generation failed to produce output.');
       }
-      // O output já deve estar no formato de TranslateAudioOutputSchema devido ao output: {schema: ...}
       return output;
 
     } catch (error) {
         console.error('[translateAudioFlow] Error during ai.generate:', error);
-        // Re-throw o erro para ser pego pelo chamador (websocket-server)
-        // ou retorne um objeto de erro estruturado, se preferir.
-        // Para manter o comportamento anterior:
-        if (error instanceof Error) {
-             throw new Error(`[GoogleGenerativeAI Error]: ${error.message}`);
-        }
-        throw new Error('Unknown error during AI generation.');
+        // Lançar o erro original para manter a stack trace e detalhes.
+        // O servidor WebSocket pode adicionar seu próprio prefixo se necessário.
+        throw error; 
     }
   }
 );
