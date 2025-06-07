@@ -13,45 +13,42 @@ console.log(`[WebSocketServer] Iniciado em ws://localhost:${PORT}`);
 
 const AUDIO_CHUNKS_TO_ACCUMULATE = 3; 
 const INACTIVITY_TIMEOUT_MS = 1500; 
-const PROCESSING_DELAY_MS = 500; // Delay between processing chunks for the same client
+const PROCESSING_DELAY_MS = 3000; // Aumentado de 500 para 3000
 
 interface ClientState {
   audioBuffer: Blob[];
   inactivityTimer: NodeJS.Timeout | null;
   sourceLanguage: string | null;
   targetLanguage: string | null;
-  isProcessing: boolean; // Flag to prevent concurrent processing for the same client
-  messageQueue: Buffer[]; // Queue for incoming messages while processing
+  isProcessing: boolean; 
+  messageQueue: Buffer[]; 
 }
 const clientStates = new Map<WebSocket, ClientState>();
 
-// Helper function for delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function processClientAudio(ws: WebSocket) {
   const clientState = clientStates.get(ws);
   if (!clientState || clientState.isProcessing || clientState.audioBuffer.length < AUDIO_CHUNKS_TO_ACCUMULATE) {
-    // If not enough chunks, or already processing, or no state, do nothing yet or reset timer
     if (clientState && !clientState.isProcessing && clientState.audioBuffer.length > 0) {
         if (clientState.inactivityTimer) clearTimeout(clientState.inactivityTimer);
         clientState.inactivityTimer = setTimeout(() => {
-            if (!clientState.isProcessing && clientState.audioBuffer.length > 0) { // Check again before processing
+            if (!clientState.isProcessing && clientState.audioBuffer.length > 0) { 
                 console.log(`[WebSocketServer] Inactivity timeout reached for client, processing ${clientState.audioBuffer.length} chunks.`);
-                processClientAudio(ws); // Trigger processing due to inactivity
+                processClientAudio(ws); 
             }
         }, INACTIVITY_TIMEOUT_MS);
     }
     return;
   }
 
-  // Mark as processing
   clientState.isProcessing = true;
   if (clientState.inactivityTimer) {
     clearTimeout(clientState.inactivityTimer);
     clientState.inactivityTimer = null;
   }
 
-  const chunksToProcess = clientState.audioBuffer.splice(0, clientState.audioBuffer.length); // Process all current chunks
+  const chunksToProcess = clientState.audioBuffer.splice(0, clientState.audioBuffer.length); 
   const combinedBlob = new Blob(chunksToProcess, { type: chunksToProcess[0]?.type || 'audio/webm' });
   
   const arrayBuffer = await combinedBlob.arrayBuffer();
@@ -60,7 +57,7 @@ async function processClientAudio(ws: WebSocket) {
   const audioDataUri = `data:${mimeType};base64,${buffer.toString('base64')}`;
 
   if (audioDataUri.split(',')[1]?.length > 0) {
-    console.log(`[WebSocketServer] Enviando áudio acumulado. MimeType: ${mimeType}, Tamanho DataURI: ${audioDataUri.length} bytes (${(audioDataUri.length / 1024).toFixed(2)} KB).`);
+    console.log(`[WebSocketServer] Enviando áudio acumulado. MimeType: ${mimeType}, Tamanho DataURI: ${(audioDataUri.length / 1024).toFixed(2)} KB.`);
     console.log(`[WebSocketServer] Início do audioDataUri a ser enviado para o fluxo: ${audioDataUri.substring(0, 100)}...`);
     try {
       const output = await translateAudio({
@@ -70,18 +67,36 @@ async function processClientAudio(ws: WebSocket) {
       });
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ translatedText: output.translatedText }));
-        console.log(`[WebSocketServer] Texto transcrito (retornado como traduzido) enviado: "${output.translatedText}"`);
+        console.log(`[WebSocketServer] Texto traduzido enviado: "${output.translatedText}"`);
       }
     } catch (error: any) {
-      console.error('[WebSocketServer] Erro ao transcrever áudio acumulado:', error.message || error);
+      console.error('[WebSocketServer] Erro ao traduzir áudio acumulado:', error.message || error);
       let errorMessage = 'Erro ao processar áudio acumulado.';
-      if (error.message) {
+      let traceId: string | undefined;
+      let errorDetails: any | undefined;
+
+      if (error instanceof Error) { 
         errorMessage = error.message;
+        if ((error as any).name === 'GoogleGenerativeAIFetchError' || error.constructor.name === 'GoogleGenerativeAIFetchError') {
+            traceId = (error as any).traceId;
+            errorDetails = (error as any).errorDetails; // Supondo que o fluxo Genkit pode adicionar isso
+            errorMessage = `[GoogleGenerativeAI Error]: ${error.message}`; 
+            if (errorDetails) {
+                errorMessage += ` Details: ${JSON.stringify(errorDetails)}`;
+            }
+            if (traceId) {
+                errorMessage += ` Trace ID: ${traceId}`;
+            }
+        }
       } else if (typeof error === 'string') {
         errorMessage = error;
       }
+
+      console.log(`[WebSocketServer] Enviando erro para o cliente: ${errorMessage}`);
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ error: `Erro do servidor (acumulado): ${errorMessage}` }));
+        ws.send(JSON.stringify({ 
+            error: `Erro do servidor (acumulado): ${errorMessage}`
+        }));
       }
     }
   } else {
@@ -91,12 +106,10 @@ async function processClientAudio(ws: WebSocket) {
   await delay(PROCESSING_DELAY_MS);
   clientState.isProcessing = false;
 
-  // Check if there are more chunks to process that arrived during processing
   if (clientState.audioBuffer.length >= AUDIO_CHUNKS_TO_ACCUMULATE) {
      console.log('[WebSocketServer] Buffer tem mais chunks suficientes após processamento, disparando próximo processamento.');
      processClientAudio(ws); 
   } else if (clientState.audioBuffer.length > 0) {
-     // Not enough for a full batch, reset inactivity timer
      if (clientState.inactivityTimer) clearTimeout(clientState.inactivityTimer);
      clientState.inactivityTimer = setTimeout(() => {
         if (!clientState.isProcessing && clientState.audioBuffer.length > 0) {
@@ -123,18 +136,6 @@ wss.on('connection', (ws: WebSocket) => {
     const clientState = clientStates.get(ws);
     if (!clientState) return;
     
-    // For simplicity in this iteration, we'll process messages directly.
-    // A more robust queueing for message *parsing* could be added if needed.
-    // clientState.messageQueue.push(message); 
-    // if (clientState.isProcessingMessages) return; -> this would be for message parsing queue
-
-    // clientState.isProcessingMessages = true; -> for message parsing queue
-    // while(clientState.messageQueue.length > 0) {
-    //    const currentMessage = clientState.messageQueue.shift()!;
-    //    ... parse currentMessage ...
-    // }
-    // clientState.isProcessingMessages = false; -> for message parsing queue
-
     try {
       const dataString = message.toString();
       let parsedData: Partial<TranslateAudioInput & { audioDataUri?: string }>;
@@ -142,7 +143,6 @@ wss.on('connection', (ws: WebSocket) => {
       try {
         parsedData = JSON.parse(dataString);
       } catch (e) {
-        // ... (error handling for JSON parse)
         console.warn(`[WebSocketServer] Falha ao parsear JSON: "${dataString.substring(0,100)}..."`, e);
         if (ws.readyState === WebSocket.OPEN) {
          ws.send(JSON.stringify({ error: `Formato de mensagem inválido (não é JSON)` }));
@@ -156,7 +156,6 @@ wss.on('connection', (ws: WebSocket) => {
       const audioDataUriChunk = parsedData.audioDataUri;
 
       if (!audioDataUriChunk || !clientState.sourceLanguage || !clientState.targetLanguage) {
-        // ... (error handling for missing fields)
         console.warn(`[WebSocketServer] Mensagem inválida recebida (campos faltando): ${dataString.substring(0,100)}`);
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ error: 'Formato de mensagem inválido.' }));
@@ -168,7 +167,6 @@ wss.on('connection', (ws: WebSocket) => {
       const base64StartIndex = audioDataUriChunk.indexOf(base64Marker);
 
       if (base64StartIndex === -1 || audioDataUriChunk.substring(base64StartIndex + base64Marker.length).trim() === '') {
-        // ... (error handling for invalid data URI)
         console.warn(`[WebSocketServer] audioDataUri inválido: ${audioDataUriChunk.substring(0,100)}...`);
          if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ error: 'Formato de audioDataUri inválido' }));
@@ -181,18 +179,14 @@ wss.on('connection', (ws: WebSocket) => {
       const newBlob = new Blob([byteString], { type: mimeTypePart });
 
       clientState.audioBuffer.push(newBlob);
-      // console.log(`[WebSocketServer] Chunk de áudio adicionado ao buffer. Tamanho do buffer: ${clientState.audioBuffer.length}`);
-
 
       if (clientState.audioBuffer.length >= AUDIO_CHUNKS_TO_ACCUMULATE) {
         if (!clientState.isProcessing) {
           if (clientState.inactivityTimer) clearTimeout(clientState.inactivityTimer);
           clientState.inactivityTimer = null;
           processClientAudio(ws);
-        } else {
-          // console.log('[WebSocketServer] Buffer cheio, mas já processando. Chunk enfileirado.');
         }
-      } else { // Not enough chunks, set/reset inactivity timer if not processing
+      } else { 
         if (!clientState.isProcessing) {
             if (clientState.inactivityTimer) clearTimeout(clientState.inactivityTimer);
             clientState.inactivityTimer = setTimeout(() => {
