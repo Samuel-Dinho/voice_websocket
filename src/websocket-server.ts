@@ -20,7 +20,9 @@ wss.on('connection', (ws: WebSocket) => {
       const parsedData: TranslateAudioInput = JSON.parse(dataString);
 
       if (!parsedData.audioDataUri || !parsedData.sourceLanguage || !parsedData.targetLanguage) {
-        ws.send(JSON.stringify({ error: 'Formato de mensagem inválido. Campos obrigatórios: audioDataUri, sourceLanguage, targetLanguage' }));
+        const errorMsg = 'Formato de mensagem inválido. Campos obrigatórios: audioDataUri, sourceLanguage, targetLanguage';
+        console.warn(`[WebSocketServer] Mensagem inválida recebida: ${dataString}`);
+        ws.send(JSON.stringify({ error: errorMsg }));
         return;
       }
       
@@ -32,25 +34,39 @@ wss.on('connection', (ws: WebSocket) => {
 
     } catch (error) {
       console.error('[WebSocketServer] Erro ao processar mensagem ou traduzir:', error);
-      let errorMessage = 'Erro ao processar mensagem.';
+      let errorMessage = 'Erro ao processar mensagem ou durante a tradução.';
       if (error instanceof Error) {
           errorMessage = error.message;
       }
-      ws.send(JSON.stringify({ error: errorMessage }));
+      try {
+        ws.send(JSON.stringify({ error: errorMessage }));
+      } catch (sendError) {
+        console.error('[WebSocketServer] Erro ao enviar mensagem de erro para o cliente:', sendError);
+      }
     }
   });
 
-  ws.on('close', () => {
-    console.log('[WebSocketServer] Cliente desconectado');
+  ws.on('close', (code, reason) => {
+    const reasonText = reason ? reason.toString() : 'Nenhuma razão especificada';
+    console.log(`[WebSocketServer] Cliente desconectado. Código: ${code}, Razão: ${reasonText}`);
   });
 
   ws.on('error', (error: Error) => {
-    console.error('[WebSocketServer] Erro de conexão:', error);
+    console.error('[WebSocketServer] Erro na conexão WebSocket individual do cliente:', error);
   });
 
-  ws.send(JSON.stringify({ message: 'Conectado com sucesso ao servidor WebSocket LinguaVox.' }));
+  try {
+    ws.send(JSON.stringify({ message: 'Conectado com sucesso ao servidor WebSocket LinguaVox.' }));
+    console.log('[WebSocketServer] Mensagem de boas-vindas enviada ao cliente.');
+  } catch (sendError) {
+    console.error('[WebSocketServer] Erro ao enviar mensagem de boas-vindas:', sendError);
+    // Considerar fechar a conexão se a mensagem de boas-vindas for crítica
+    // ws.close(1011, "Erro interno ao enviar mensagem inicial"); 
+  }
 });
 
 wss.on('error', (error: Error) => {
-  console.error('[WebSocketServer] Erro no servidor:', error);
+  console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error);
 });
+
+    
