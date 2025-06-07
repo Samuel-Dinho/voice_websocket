@@ -28,7 +28,7 @@ const TranslateAudioOutputSchema = z.object({
 });
 export type TranslateAudioOutput = z.infer<typeof TranslateAudioOutputSchema>;
 
-// Schema for the intermediate transcription step
+// Schema for the intermediate transcription step (still useful if we re-introduce JSON later)
 const TranscriptionOutputSchema = z.object({
   transcribedText: z.string().describe('The transcribed text from the audio.'),
 });
@@ -58,11 +58,7 @@ const translateAudioFlow = ai.defineFlow(
           {media: {url: input.audioDataUri}},
           {text: "Transcription:"}
         ],
-        output: {
-          format: 'json',
-          schema: TranscriptionOutputSchema,
-        },
-        // model: 'googleai/gemini-2.0-flash', // Using global model
+        // No longer requesting JSON output for transcription, will use response.text
         config: { 
           safetySettings: [
             { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
@@ -73,16 +69,12 @@ const translateAudioFlow = ai.defineFlow(
         }
       });
 
-      if (!transcriptionResponse.output) {
-          console.error('[translateAudioFlow] Transcription step did not return an output.');
-          throw new Error('Transcription generation failed to produce output.');
-      }
-      const { transcribedText } = transcriptionResponse.output as TranscriptionOutput;
-      console.log(`[translateAudioFlow] Transcribed text: "${transcribedText}"`);
+      const transcribedText = transcriptionResponse.text?.trim(); // Get raw text, trim whitespace
+      console.log(`[translateAudioFlow] Raw transcription text: "${transcribedText}"`);
 
-      if (!transcribedText || transcribedText.trim() === "") {
-        console.log('[translateAudioFlow] Transcription resulted in empty text. Skipping translation.');
-        return { translatedText: "" }; // Return empty if transcription is empty
+      if (!transcribedText) { // Check if transcribedText is null, undefined, or empty string
+          console.warn('[translateAudioFlow] Transcription step returned no text or empty text. Skipping translation.');
+          return { translatedText: "" }; // Return empty if transcription is empty or failed to produce text
       }
 
       // Step 2: Translate transcribed text
@@ -93,7 +85,6 @@ const translateAudioFlow = ai.defineFlow(
           format: 'json',
           schema: TranslateAudioOutputSchema,
         },
-        // model: 'googleai/gemini-2.0-flash', // Using global model
         config: { 
           safetySettings: [
             { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
@@ -112,10 +103,8 @@ const translateAudioFlow = ai.defineFlow(
       return translationResponse.output;
 
     } catch (error) {
-        // Log o erro original para manter a stack trace e detalhes.
         console.error('[translateAudioFlow] Error during ai.generate (transcription or translation):', error);
-        throw error; // Re-throw o erro para ser pego pelo servidor WebSocket
+        throw error; 
     }
   }
 );
-
