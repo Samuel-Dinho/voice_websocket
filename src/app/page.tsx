@@ -14,11 +14,10 @@ import { Separator } from "@/components/ui/separator";
 
 type StreamingState = "idle" | "recognizing" | "error" | "stopping";
 
-// Variável global para SpeechRecognition para evitar múltiplas instâncias
 let recognition: SpeechRecognition | null = null;
 
 export default function LinguaVoxPage() {
-  const [sourceLanguage, setSourceLanguage] = useState<string>("pt-BR"); // Default para pt-BR para Web Speech API
+  const [sourceLanguage, setSourceLanguage] = useState<string>("pt-BR");
   const [streamingState, setStreamingState] = useState<StreamingState>("idle");
   const [transcribedText, setTranscribedText] = useState<string>("");
   const [interimTranscribedText, setInterimTranscribedText] = useState<string>("");
@@ -27,7 +26,9 @@ export default function LinguaVoxPage() {
   const { toast } = useToast();
 
   const isSpeechRecognitionSupported = useCallback(() => {
-    return typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+    const supported = typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+    console.log("[Client] SpeechRecognition supported:", supported);
+    return supported;
   }, []);
 
   useEffect(() => {
@@ -43,20 +44,23 @@ export default function LinguaVoxPage() {
   }, [toast, isSpeechRecognitionSupported]);
 
   const startRecognition = useCallback(() => {
+    console.log("[Client] Attempting to start recognition. Current state:", streamingState, "Source language:", sourceLanguage);
     if (!isSpeechRecognitionSupported()) {
       setError("Reconhecimento de fala não suportado.");
       setStreamingState("error");
+      toast({ title: "Erro Crítico", description: "API de Reconhecimento de Fala não disponível (verificação em startRecognition).", variant: "destructive" });
+      console.error("[Client] SpeechRecognition not supported (checked in startRecognition).");
       return;
     }
 
     if (streamingState === "recognizing") {
-      console.warn("[Client] Tentativa de iniciar reconhecimento já em progresso.");
+      console.warn("[Client] Attempting to start recognition when already in progress.");
       return;
     }
 
     setStreamingState("recognizing");
     setError(null);
-    setTranscribedText("");
+    setTranscribedText(""); // Limpa transcrição anterior ao iniciar uma nova
     setInterimTranscribedText("");
     toast({ title: "Microfone Ativado", description: "Iniciando reconhecimento de fala..." });
 
@@ -64,44 +68,52 @@ export default function LinguaVoxPage() {
     if (!SpeechRecognitionAPI) {
         setError("API de Reconhecimento de Fala não encontrada no navegador.");
         setStreamingState("error");
+        toast({ title: "Erro Crítico", description: "API de Reconhecimento de Fala não encontrada no objeto window.", variant: "destructive" });
+        console.error("[Client] SpeechRecognitionAPI not found in window object.");
         return;
     }
     
-    recognition = new SpeechRecognitionAPI();
+    try {
+      recognition = new SpeechRecognitionAPI();
+    } catch (e: any) {
+      console.error("[Client] Error creating SpeechRecognition instance:", e);
+      setError(`Erro ao criar instância de SpeechRecognition: ${e.message}`);
+      setStreamingState("error");
+      toast({ title: "Erro de Inicialização", description: `Não foi possível criar SpeechRecognition: ${e.message}`, variant: "destructive" });
+      return;
+    }
+    
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = sourceLanguage;
 
-    console.log(`[Client] Iniciando SpeechRecognition com idioma: ${sourceLanguage}`);
+    console.log(`[Client] SpeechRecognition instance created. Language: ${sourceLanguage}`);
 
     recognition.onstart = () => {
-      console.log("[Client] SpeechRecognition iniciado.");
+      console.log("[Client] SpeechRecognition started successfully.");
       setStreamingState("recognizing");
     };
 
-    let finalTranscriptProcessedLength = 0;
-
-    recognition.onresult = (event) => {
-      let interim = "";
-      let final = transcribedText; // Começa com o texto final já acumulado
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let final_transcript = '';
+      let interim_transcript = '';
 
       for (let i = event.resultIndex; i < event.results.length; ++i) {
         if (event.results[i].isFinal) {
-          const newFinalChunk = event.results[i][0].transcript;
-          // Adiciona apenas a nova parte final
-          final += (final ? " " : "") + newFinalChunk.substring(finalTranscriptProcessedLength > 0 ? 0 : 0); // Se precisar de lógica mais complexa para evitar duplicação
-          finalTranscriptProcessedLength = newFinalChunk.length; // Atualiza o comprimento processado (simplificado)
+          final_transcript += event.results[i][0].transcript;
         } else {
-          interim += event.results[i][0].transcript;
+          interim_transcript += event.results[i][0].transcript;
         }
       }
       
-      setTranscribedText(final);
-      setInterimTranscribedText(interim);
+      if (final_transcript) {
+         setTranscribedText(prev => (prev ? prev.trim() + " " : "") + final_transcript.trim());
+      }
+      setInterimTranscribedText(interim_transcript.trim());
     };
 
-    recognition.onerror = (event) => {
-      console.error("[Client] Erro no SpeechRecognition:", event.error);
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      console.error("[Client] SpeechRecognition Error Event:", event);
       let errMessage = `Erro no reconhecimento: ${event.error}`;
       if (event.error === 'network') {
         errMessage = "Erro de rede durante o reconhecimento. Verifique sua conexão.";
@@ -110,56 +122,75 @@ export default function LinguaVoxPage() {
       } else if (event.error === 'audio-capture') {
         errMessage = "Falha na captura de áudio. Verifique as permissões do microfone.";
       } else if (event.error === 'not-allowed') {
-        errMessage = "Permissão para usar o microfone negada ou não solicitada.";
+        errMessage = "Permissão para usar o microfone negada ou não solicitada. Verifique as configurações de permissão do site no navegador.";
       } else if (event.error === 'language-not-supported') {
-        errMessage = `O idioma ${sourceLanguage} não é suportado pelo reconhecimento de fala do seu navegador.`;
+        errMessage = `O idioma '${sourceLanguage}' não é suportado pelo reconhecimento de fala do seu navegador.`;
+      } else if (event.message) {
+        errMessage += `. Detalhes: ${event.message}`;
       }
       setError(errMessage);
       setStreamingState("error");
       toast({ title: "Erro de Reconhecimento", description: errMessage, variant: "destructive" });
-      if (recognition && streamingState === "recognizing") {
+      if (recognition && (streamingState === "recognizing" || streamingState === "stopping") ) { // Ensure it stops only if it was trying to run
         recognition.stop();
       }
     };
 
     recognition.onend = () => {
-      console.log("[Client] SpeechRecognition finalizado.");
-      // Só muda para idle se não foi um erro que já mudou o estado
+      console.log("[Client] SpeechRecognition ended. Current state:", streamingState);
       if (streamingState === "recognizing" || streamingState === "stopping") {
         setStreamingState("idle");
-        setInterimTranscribedText(""); // Limpa interino ao finalizar
+        setInterimTranscribedText(""); 
       }
-      finalTranscriptProcessedLength = 0; // Reseta para a próxima sessão
     };
+    
+    console.log("[Client] Calling recognition.start()...");
+    try {
+      recognition.start();
+    } catch (e: any) {
+      console.error("[Client] Error calling recognition.start():", e);
+      setError(`Erro ao iniciar reconhecimento: ${e.message}`);
+      setStreamingState("error");
+      toast({ title: "Erro ao Iniciar", description: `Não foi possível iniciar o reconhecimento: ${e.message}`, variant: "destructive" });
+      if (recognition && (streamingState === "recognizing" || streamingState === "stopping")) {
+        recognition.stop();
+      }
+    }
 
-    recognition.start();
-
-  }, [sourceLanguage, toast, isSpeechRecognitionSupported, streamingState, transcribedText]);
+  }, [sourceLanguage, toast, streamingState, isSpeechRecognitionSupported]);
 
   const stopRecognition = useCallback(() => {
-    console.log("[Client] Parando reconhecimento de fala...");
+    console.log("[Client] Attempting to stop recognition...");
     setStreamingState("stopping");
     if (recognition) {
-      recognition.stop();
+      try {
+        recognition.stop();
+        console.log("[Client] recognition.stop() called.");
+      } catch (e: any) {
+        console.error("[Client] Error calling recognition.stop():", e);
+        // Mesmo se stop() falhar, tentamos garantir o estado idle.
+        setStreamingState("idle"); 
+      }
+    } else {
+       // Se recognition for null, mas estávamos tentando parar, apenas mudamos o estado.
+       setStreamingState("idle");
     }
-    // O onend do recognition vai setar o estado para "idle"
   }, []);
 
   const handleToggleStreaming = () => {
+    console.log("[Client] handleToggleStreaming called. Current state:", streamingState);
     if (streamingState === "recognizing") {
       stopRecognition();
     } else if (streamingState === "idle" || streamingState === "error") {
-      // Se estiver em erro, permite tentar iniciar novamente (após o usuário corrigir o problema)
       startRecognition();
     }
   };
   
   useEffect(() => {
-    // Cleanup no unmount
     return () => {
       if (recognition) {
-        console.log("[Client] Componente desmontando, parando SpeechRecognition se ativo.");
-        recognition.abort(); // Abortar para interromper imediatamente
+        console.log("[Client] Component unmounting, aborting SpeechRecognition if active.");
+        recognition.abort(); 
         recognition = null;
       }
     };
@@ -171,7 +202,9 @@ export default function LinguaVoxPage() {
   if (streamingState === "recognizing") streamButtonText = "Parar Transcrição";
   if (streamingState === "stopping") streamButtonText = "Parando...";
   
-  const isButtonDisabled = streamingState === "stopping" || (streamingState === "error" && !isSpeechRecognitionSupported());
+  const isButtonDisabled = streamingState === "stopping"; // Simplificado: só desabilita se estiver parando.
+                                                       // Se houver erro, o usuário pode tentar novamente.
+                                                       // A checagem de suporte já é feita em startRecognition.
   const isLoading = streamingState === "stopping";
 
   return (
@@ -195,7 +228,7 @@ export default function LinguaVoxPage() {
             <CardDescription>
               Selecione o idioma de origem e inicie para transcrição em tempo real usando a API Web Speech do seu navegador.
                <br/>
-              <span className="text-xs text-muted-foreground">Nota: A qualidade e suporte a idiomas dependem do seu navegador.</span>
+              <span className="text-xs text-muted-foreground">Nota: A qualidade e suporte a idiomas dependem do seu navegador. Verifique as permissões do microfone.</span>
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -205,23 +238,24 @@ export default function LinguaVoxPage() {
                 label="Idioma de Origem da Fala"
                 value={sourceLanguage}
                 onValueChange={(value) => {
-                  if (streamingState !== "recognizing") {
+                  if (streamingState !== "recognizing" && streamingState !== "stopping") {
                     setSourceLanguage(value);
+                    console.log("[Client] Source language changed to:", value);
+                  } else {
+                    console.log("[Client] Cannot change language while recognizing or stopping.");
                   }
                 }}
                 languages={supportedLanguages.map(lang => ({
                     ...lang,
-                    // Adapta códigos para o formato esperado pela Web Speech API (ex: 'en-US')
-                    // Esta é uma simplificação, pode ser necessário mapeamento mais robusto
                     code: lang.code === "en" ? "en-US" : 
                           lang.code === "es" ? "es-ES" :
                           lang.code === "fr" ? "fr-FR" :
                           lang.code === "de" ? "de-DE" :
                           lang.code === "it" ? "it-IT" :
                           lang.code === "pt" ? "pt-BR" :
-                          lang.code // fallback
+                          lang.code 
                 }))}
-                disabled={streamingState === "recognizing"}
+                disabled={streamingState === "recognizing" || streamingState === "stopping"}
               />
             </div>
 
@@ -230,7 +264,7 @@ export default function LinguaVoxPage() {
             <div className="flex flex-col items-center space-y-4">
               <Button
                 onClick={handleToggleStreaming}
-                disabled={isButtonDisabled || !isSpeechRecognitionSupported()}
+                disabled={isButtonDisabled}
                 className="w-full md:w-auto px-8 py-6 text-lg transition-all duration-300 ease-in-out transform hover:scale-105"
                 variant={streamingState === "recognizing" ? "destructive" : "default"}
               >
