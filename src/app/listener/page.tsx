@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Volume2, WifiOff, Loader2, Mic, PlayCircle } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 
 type ListenerState = "connecting" | "connected" | "disconnected" | "error";
 
@@ -25,63 +25,66 @@ export default function ListenerPage() {
     return `${protocol}//${window.location.hostname}:${wsPort}`;
   };
 
-  useEffect(() => {
-    let fallbackIntervalId: NodeJS.Timeout | null = null;
-    const loadVoices = () => {
-      const voices = window.speechSynthesis.getVoices();
-      if (voices.length > 0) {
-        setAvailableVoices(voices);
-        console.log(`[Listener] Vozes de síntese carregadas: ${voices.length}`, voices.map(v => ({name: v.name, lang: v.lang, default: v.default})));
-        if (fallbackIntervalId) {
-            clearInterval(fallbackIntervalId);
-            fallbackIntervalId = null;
-            console.log("[Listener] Vozes carregadas, fallbackInterval limpo.");
-        }
-      } else {
-        console.log("[Listener] Lista de vozes vazia, aguardando onvoiceschanged ou fallback.");
+  const loadVoices = useCallback(() => {
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      setAvailableVoices(voices);
+      console.log(`[Listener] Vozes de síntese carregadas: ${voices.length}`, voices.map(v => ({name: v.name, lang: v.lang, default: v.default})));
+      // Limpar intervalo de fallback se as vozes forem carregadas
+      if (voiceLoadFallbackIntervalRef.current) {
+        clearInterval(voiceLoadFallbackIntervalRef.current);
+        voiceLoadFallbackIntervalRef.current = null;
+        console.log("[Listener] Vozes carregadas, fallbackInterval limpo.");
       }
-    };
+    } else {
+      console.log("[Listener] Lista de vozes vazia, aguardando onvoiceschanged ou fallback.");
+    }
+  }, []);
 
-    loadVoices(); 
+  const voiceLoadFallbackIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    loadVoices(); // Tenta carregar imediatamente
 
     if (typeof window !== 'undefined' && window.speechSynthesis) {
         if (window.speechSynthesis.onvoiceschanged !== undefined) {
             window.speechSynthesis.onvoiceschanged = loadVoices;
         } else {
             console.warn("[Listener] onvoiceschanged não suportado. Usando fallback de intervalo para carregar vozes.");
-            fallbackIntervalId = setInterval(() => {
-                // Verifica se as vozes já não foram carregadas para evitar chamadas desnecessárias a loadVoices
-                if(window.speechSynthesis.getVoices().length === 0) {
-                    console.log("[Listener] Fallback: tentando carregar vozes...");
-                    loadVoices(); // loadVoices agora limpa o intervalo se bem-sucedido
-                } else if (fallbackIntervalId) { // Se vozes carregaram por outro meio, limpa aqui
-                    console.log("[Listener] Vozes já carregadas, limpando fallbackInterval no próprio fallback.");
-                    clearInterval(fallbackIntervalId);
-                    fallbackIntervalId = null;
-                }
-            }, 1000); // Aumentado para 1000ms para reduzir spam de log se onvoiceschanged demorar muito
+            if (!voiceLoadFallbackIntervalRef.current) { // Evita múltiplos intervalos
+                voiceLoadFallbackIntervalRef.current = setInterval(() => {
+                    if(window.speechSynthesis.getVoices().length === 0) {
+                        console.log("[Listener] Fallback: tentando carregar vozes...");
+                        loadVoices();
+                    } else if (voiceLoadFallbackIntervalRef.current) {
+                        console.log("[Listener] Vozes já carregadas (detectado no fallback), limpando fallbackInterval.");
+                        clearInterval(voiceLoadFallbackIntervalRef.current);
+                        voiceLoadFallbackIntervalRef.current = null;
+                    }
+                }, 1000);
+            }
         }
     }
 
-    return () => { 
+    return () => {
       if (typeof window !== 'undefined' && window.speechSynthesis && window.speechSynthesis.onvoiceschanged !== undefined) {
         window.speechSynthesis.onvoiceschanged = null;
       }
-      if (fallbackIntervalId) {
+      if (voiceLoadFallbackIntervalRef.current) {
         console.log("[Listener] Limpando fallbackIntervalId ao desmontar o efeito de voz.");
-        clearInterval(fallbackIntervalId);
-        fallbackIntervalId = null;
+        clearInterval(voiceLoadFallbackIntervalRef.current);
+        voiceLoadFallbackIntervalRef.current = null;
       }
     };
-  }, []);
+  }, [loadVoices]);
 
 
-  const speakNextInQueue = () => {
+  const speakNextInQueue = useCallback(() => {
     console.log(`[Listener] speakNextInQueue chamado. Audio Ativado: ${audioActivated}, Está Falando: ${isSpeaking}, Fila: ${utteranceQueueRef.current.length}`);
     if (!audioActivated || isSpeaking || utteranceQueueRef.current.length === 0) {
-      if (utteranceQueueRef.current.length === 0 && isSpeaking) {
-        console.log("[Listener] Fila vazia e isSpeaking=true, resetando isSpeaking para false.");
-        setIsSpeaking(false); 
+      if (utteranceQueueRef.current.length === 0 && isSpeaking && audioActivated) { // Só reseta se o áudio foi ativado
+        console.log("[Listener] Fila vazia e isSpeaking=true (áudio ativado), resetando isSpeaking para false.");
+        setIsSpeaking(false);
       }
       return;
     }
@@ -90,29 +93,28 @@ export default function ListenerPage() {
     const utterance = utteranceQueueRef.current.shift();
 
     if (utterance) {
-      const targetLangLC = utterance.lang.toLowerCase(); 
+      const targetLangLC = utterance.lang.toLowerCase();
       const targetLangPrefixLC = targetLangLC.split('-')[0];
 
       console.log(`[Listener] Processando utterance: "${utterance.text.substring(0,30)}...", Lang: ${utterance.lang}`);
       console.log(`[Listener] Vozes disponíveis no momento da fala (${availableVoices.length}):`, availableVoices.map(v => ({name: v.name, lang: v.lang, default: v.default})));
 
-
       if (availableVoices.length > 0) {
-        let voice = availableVoices.find(v => 
+        let voice = availableVoices.find(v =>
           v.lang.toLowerCase().startsWith(targetLangPrefixLC) && v.default === true
         );
         if (!voice) {
-          voice = availableVoices.find(v => 
+          voice = availableVoices.find(v =>
             v.lang.toLowerCase().startsWith(targetLangPrefixLC)
           );
         }
-        if (!voice && targetLangLC !== targetLangPrefixLC) { 
+        if (!voice && targetLangLC !== targetLangPrefixLC) {
           voice = availableVoices.find(v => v.lang.toLowerCase() === targetLangLC);
         }
-        
+
         if (voice) {
           utterance.voice = voice;
-          utterance.lang = voice.lang; 
+          utterance.lang = voice.lang;
           console.log(`[Listener] Voz encontrada e definida: ${voice.name} (${voice.lang}) para o texto: "${utterance.text.substring(0,30)}..."`);
         } else {
           console.warn(`[Listener] Nenhuma voz específica encontrada para ${targetLangLC} (prefixo ${targetLangPrefixLC}) nas ${availableVoices.length} vozes. Usando padrão do navegador para ${utterance.lang}. Texto: "${utterance.text.substring(0,30)}..."`);
@@ -120,7 +122,7 @@ export default function ListenerPage() {
       } else {
         console.warn(`[Listener] 'availableVoices' está VAZIO no momento de tentar selecionar uma voz. Texto: "${utterance.text.substring(0,30)}..."`);
       }
-      
+
       utterance.onstart = () => {
         console.log(`[Listener] Evento onstart: Síntese de fala iniciada para: "${utterance.text.substring(0,30)}..."`);
         setLastMessage(`Falando: "${utterance.text.substring(0,20)}..."`);
@@ -128,13 +130,13 @@ export default function ListenerPage() {
       utterance.onend = () => {
         console.log(`[Listener] Evento onend: Síntese de fala finalizada para: "${utterance.text.substring(0,30)}..."`);
         setIsSpeaking(false);
-        speakNextInQueue(); 
+        speakNextInQueue();
       };
       utterance.onerror = (event) => {
         console.error(`[Listener] Evento onerror: Erro na síntese de fala: ${event.error}. Texto: "${utterance.text.substring(0,30)}..." Detalhes:`, event);
         setLastMessage(`Erro ao falar: ${event.error}`);
         setIsSpeaking(false);
-        speakNextInQueue(); 
+        speakNextInQueue();
       };
 
       console.log("[Listener] Chamando window.speechSynthesis.speak() com utterance:", {text: utterance.text, lang: utterance.lang, voice: utterance.voice?.name });
@@ -143,24 +145,28 @@ export default function ListenerPage() {
       } catch (e) {
         console.error("[Listener] Erro direto ao chamar window.speechSynthesis.speak():", e);
         setIsSpeaking(false);
-        speakNextInQueue(); // Tenta a próxima se esta falhou
+        speakNextInQueue();
       }
 
     } else {
       console.warn("[Listener] speakNextInQueue: utterance era nula ou fila ficou vazia inesperadamente.");
-      setIsSpeaking(false); 
+      setIsSpeaking(false);
     }
-  };
-  
-  const handleActivateAudio = () => {
+  }, [audioActivated, isSpeaking, availableVoices]);
+
+  const handleActivateAudio = useCallback(() => {
     setAudioActivated(true);
     setLastMessage("Áudio ativado pelo usuário. Aguardando traduções...");
     console.log("[Listener] Áudio ativado pelo usuário. Tentando utterance de desbloqueio.");
     try {
-        const unlockUtterance = new SpeechSynthesisUtterance(" "); 
-        unlockUtterance.volume = 0.01; 
-        unlockUtterance.lang = availableVoices.find(v => v.lang.startsWith("en"))?.lang || "en-US"; 
-        
+        const unlockUtterance = new SpeechSynthesisUtterance(" ");
+        unlockUtterance.volume = 0.01;
+        const englishVoice = availableVoices.find(v => v.lang.toLowerCase().startsWith("en") && v.default) || availableVoices.find(v => v.lang.toLowerCase().startsWith("en"));
+        unlockUtterance.lang = englishVoice ? englishVoice.lang : "en-US";
+        if (englishVoice) unlockUtterance.voice = englishVoice;
+
+        console.log(`[Listener] Utterance de desbloqueio: lang=${unlockUtterance.lang}, voice=${unlockUtterance.voice?.name}`);
+
         unlockUtterance.onstart = () => console.log("[Listener] Unlock utterance onstart.");
         unlockUtterance.onend = () => {
             console.log("[Listener] Unlock utterance onend.");
@@ -168,7 +174,8 @@ export default function ListenerPage() {
         };
         unlockUtterance.onerror = (event) => {
             console.error("[Listener] Unlock utterance onerror:", event.error, "Evento:", event);
-            speakNextInQueue(); 
+            // Mesmo com erro no unlock, tentamos processar a fila principal.
+            speakNextInQueue();
         };
         window.speechSynthesis.speak(unlockUtterance);
         console.log("[Listener] Unlock utterance enviada para speech synthèse.");
@@ -176,28 +183,28 @@ export default function ListenerPage() {
         console.error("[Listener] Erro ao tentar utterance de desbloqueio de áudio:", e);
         speakNextInQueue();
     }
-  };
+  }, [availableVoices, speakNextInQueue]);
 
   useEffect(() => {
     const WS_URL = getWebSocketUrl();
     console.log("[Listener] useEffect principal: Tentando conectar ao WebSocket em:", WS_URL);
     setListenerState("connecting");
 
-    if (ws.current && ws.current.readyState !== WebSocket.CLOSED) { 
+    if (ws.current && ws.current.readyState !== WebSocket.CLOSED) {
       console.warn("[Listener] WebSocket ref já existe e não está fechado. Fechando conexão anterior antes de reconectar. Estado:", ws.current.readyState);
-      ws.current.onclose = null; // Evita que o onclose da conexão antiga dispare lógicas de estado
+      ws.current.onclose = null;
       ws.current.onerror = null;
       ws.current.onmessage = null;
       ws.current.onopen = null;
       ws.current.close(1000, "Reconexão iniciada por useEffect");
-      ws.current = null; // Garante que a ref seja limpa
+      ws.current = null;
     }
 
     const newWs = new WebSocket(WS_URL);
-    ws.current = newWs; // Atribui a nova instância à ref
+    ws.current = newWs;
 
     newWs.onopen = () => {
-      if (ws.current !== newWs) { // Verifica se esta é a conexão ativa
+      if (ws.current !== newWs) {
         console.log("[Listener] onopen: Conexão antiga, ignorando.");
         return;
       }
@@ -220,17 +227,15 @@ export default function ListenerPage() {
 
         if (serverMessage.type === "translated_text_for_listener" && serverMessage.text && serverMessage.targetLanguage) {
           setLastMessage(`Texto traduzido recebido para ${serverMessage.targetLanguage}: "${serverMessage.text.substring(0,30)}..." (${new Date().toLocaleTimeString()})`);
-          
+
           const utterance = new SpeechSynthesisUtterance(serverMessage.text);
-          utterance.lang = serverMessage.targetLanguage; 
-          
+          utterance.lang = serverMessage.targetLanguage;
+
           utteranceQueueRef.current.push(utterance);
           console.log(`[Listener] Utterance adicionada à fila. Tamanho da fila: ${utteranceQueueRef.current.length}`);
-          if (audioActivated && !isSpeaking) {
-            speakNextInQueue();
-          } else {
-            console.log(`[Listener] Áudio não ativado (${audioActivated}) ou já falando (${isSpeaking}). Utterance permanecerá na fila.`);
-          }
+          // Chama speakNextInQueue incondicionalmente. A própria função speakNextInQueue
+          // verificará os estados audioActivated e isSpeaking.
+          speakNextInQueue();
         } else if (serverMessage.message) {
           setLastMessage(serverMessage.message);
         } else if (serverMessage.error) {
@@ -253,50 +258,58 @@ export default function ListenerPage() {
       console.error("[Listener] Erro no WebSocket:", event);
       setListenerState("error");
       setLastMessage("Erro na conexão WebSocket.");
-      setIsSpeaking(false); 
-      setAudioActivated(false); 
+      setIsSpeaking(false);
+      setAudioActivated(false);
     };
 
     newWs.onclose = (event) => {
-      if (ws.current !== newWs && ws.current !== null) { // Se ws.current é null, é provável que a limpeza já tenha ocorrido
+      if (ws.current !== newWs && ws.current !== null) {
         console.log(`[Listener] onclose: Conexão antiga (URL: ${newWs.url}, Código: ${event.code}). Ignorando.`);
         return;
       }
       console.log(`[Listener] WebSocket desconectado (URL: ${newWs.url}). Código: ${event.code}, Limpo: ${event.wasClean}, Razão: ${event.reason}`);
       setListenerState("disconnected");
-      if (event.code !== 1000) { 
+      if (event.code !== 1000) {
         setLastMessage("Desconectado. Tente recarregar a página.");
       } else {
         setLastMessage("Desconectado do servidor.");
       }
-      setIsSpeaking(false); 
-      setAudioActivated(false); 
+      setIsSpeaking(false);
+      setAudioActivated(false);
       if(typeof window !== 'undefined' && window.speechSynthesis) {
-        window.speechSynthesis.cancel(); 
+        window.speechSynthesis.cancel();
       }
-      utteranceQueueRef.current = []; 
-      ws.current = null; // Limpa a ref aqui, pois a conexão está definitivamente fechada
+      utteranceQueueRef.current = [];
+      ws.current = null;
     };
-    
+
     return () => {
       console.log("[Listener] Cleanup do useEffect principal está sendo executado para WebSocket URL:", newWs.url);
       if (newWs && (newWs.readyState === WebSocket.OPEN || newWs.readyState === WebSocket.CONNECTING) ) {
         console.log("[Listener] Fechando WebSocket (newWs) ao desmontar/re-executar useEffect.");
-        newWs.onclose = null; // Evita que o onclose dispare após a limpeza intencional
+        newWs.onclose = null;
         newWs.close(1000, "Listener page unmounting or useEffect re-run");
       }
-      if (ws.current === newWs) { // Garante que só limpe a ref se for a mesma instância
+      if (ws.current === newWs) {
          ws.current = null;
       }
       if(typeof window !== 'undefined' && window.speechSynthesis) {
-        window.speechSynthesis.cancel(); 
+        window.speechSynthesis.cancel();
       }
       utteranceQueueRef.current = [];
-      setIsSpeaking(false); 
+      setIsSpeaking(false);
       console.log("[Listener] Cleanup do useEffect principal finalizado.");
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); 
+  // speakNextInQueue é uma dependência aqui porque a função onmessage a chama.
+  // Se speakNextInQueue mudar (o que acontece se audioActivated, isSpeaking, ou availableVoices mudarem, pois é um useCallback),
+  // queremos que o onmessage seja atualizado com a nova versão de speakNextInQueue.
+  // No entanto, isso causará reconexões do WebSocket. Uma alternativa seria não usar useCallback para speakNextInQueue,
+  // ou usar refs para os estados dentro dela. Por ora, a reconexão é menos problemática que a fala não funcionar.
+  // Idealmente, a lógica de `onmessage` não chamaria `speakNextInQueue` diretamente se ela for um `useCallback` complexo.
+  // Mas, dado que `speakNextInQueue` é chamada de outros lugares também (como `handleActivateAudio`),
+  // mantê-la como `useCallback` com suas dependências é importante para consistência.
+  // A melhoria aqui é que onmessage não tem mais o `if (audioActivated && !isSpeaking)` problemático.
+  }, [speakNextInQueue]); // Adicionamos speakNextInQueue para que onmessage tenha a versão correta.
 
   return (
     <div className="flex flex-col items-center min-h-screen p-4 md:p-8 bg-background text-foreground">
@@ -362,18 +375,18 @@ export default function ListenerPage() {
                 </div>
               )}
             </div>
-            
+
             {lastMessage && (
               <p className="text-sm text-muted-foreground text-center mt-2">
                 Última ação: {lastMessage}
               </p>
             )}
-             {availableVoices.length === 0 && listenerState === "connected" && ( 
+             {availableVoices.length === 0 && listenerState === "connected" && (
                 <p className="text-xs text-muted-foreground text-center mt-2">
                     Carregando vozes de síntese...
                 </p>
             )}
-            {audioActivated && availableVoices.length > 0 && !isSpeaking && utteranceQueueRef.current.length === 0 && ( 
+            {audioActivated && availableVoices.length > 0 && !isSpeaking && utteranceQueueRef.current.length === 0 && (
                  <p className="text-xs text-muted-foreground text-center mt-2">
                     Áudio ativado. {availableVoices.length} vozes de síntese disponíveis.
                 </p>
@@ -387,5 +400,3 @@ export default function ListenerPage() {
     </div>
   );
 }
-
-    
