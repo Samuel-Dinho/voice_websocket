@@ -5,7 +5,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Mic, MicOff, Loader2, AlertTriangle, Edit3 } from "lucide-react";
+import { Mic, MicOff, Loader2, AlertTriangle, Edit3, LanguagesIcon } from "lucide-react";
 import { LanguageSelector } from "@/components/LanguageSelector";
 import { supportedLanguages } from "@/lib/languages";
 import { useToast } from "@/hooks/use-toast";
@@ -15,20 +15,108 @@ import { Separator } from "@/components/ui/separator";
 type StreamingState = "idle" | "recognizing" | "error" | "stopping";
 
 let recognition: SpeechRecognition | null = null;
+let ws = useRef<WebSocket | null>(null);
 
 export default function LinguaVoxPage() {
-  const [sourceLanguage, setSourceLanguage] = useState<string>("pt-BR");
+  const [sourceLanguage, setSourceLanguage] = useState<string>("pt"); // Use 2-letter codes for consistency
+  const [targetLanguage, setTargetLanguage] = useState<string>("en");
   const [streamingState, setStreamingState] = useState<StreamingState>("idle");
   const [transcribedText, setTranscribedText] = useState<string>("");
   const [interimTranscribedText, setInterimTranscribedText] = useState<string>("");
+  const [translatedText, setTranslatedText] = useState<string>("");
+  const [isTranslating, setIsTranslating] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const { toast } = useToast();
 
+  const getWebSocketUrl = () => {
+    // For client-side WebSocket connection, use the current window's hostname
+    // Assume WebSocket server runs on port 3001 by default
+    // For local development, this will typically be 'ws://localhost:3001'
+    // In a deployed environment, it might be 'wss://your-app-domain.com' if proxied,
+    // or a specific WebSocket endpoint.
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    // Default to port 3001 for ws, and standard 80/443 for wss if not specified
+    // For this example, we'll stick to 3001 for simplicity, adjust if your deployment is different
+    const wsPort = process.env.NEXT_PUBLIC_WEBSOCKET_PORT || '3001';
+    return `${protocol}//${window.location.hostname}:${wsPort}`;
+  };
+
+  const connectWebSocket = useCallback(() => {
+    const WS_URL = getWebSocketUrl();
+    console.log("[Client] Tentando conectar ao WebSocket em:", WS_URL);
+
+    if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+      console.log("[Client] WebSocket já está conectado.");
+      return;
+    }
+
+    ws.current = new WebSocket(WS_URL);
+
+    ws.current.onopen = () => {
+      console.log("[Client] WebSocket conectado (client-side)");
+      setError(null); // Clear previous errors on new connection
+    };
+
+    ws.current.onmessage = (event) => {
+      try {
+        const serverMessage = JSON.parse(event.data as string);
+        console.log("[Client] Mensagem recebida do servidor:", serverMessage);
+
+        if (serverMessage.translatedText) {
+          setTranslatedText(prev => prev ? prev.trim() + " " + serverMessage.translatedText.trim() : serverMessage.translatedText.trim());
+          setIsTranslating(false);
+        } else if (serverMessage.error) {
+          console.error("[Client] Erro do servidor WebSocket:", serverMessage.error);
+          setError(`Erro do servidor: ${serverMessage.error}`);
+          toast({ title: "Erro na Tradução", description: serverMessage.error, variant: "destructive" });
+          setIsTranslating(false);
+        } else if (serverMessage.message) {
+          console.log("[Client] Mensagem informativa do servidor:", serverMessage.message);
+        }
+      } catch (e) {
+        console.error("[Client] Erro ao processar mensagem do servidor:", e);
+        setError("Erro ao processar resposta do servidor.");
+        setIsTranslating(false);
+      }
+    };
+
+    ws.current.onerror = (event) => {
+      console.error("[Client] Erro no WebSocket (client-side):", event);
+      setError("Falha na conexão WebSocket. Verifique o console.");
+      setStreamingState("error"); // Can also set to idle if preferred
+      setIsTranslating(false);
+      toast({ title: "Erro de Conexão", description: "Não foi possível conectar ao servidor WebSocket.", variant: "destructive" });
+    };
+
+    ws.current.onclose = (event) => {
+      console.log(`[Client] WebSocket desconectado (client-side). Código: ${event.code}, Razão: "${event.reason}", Foi Limpo: ${event.wasClean}. Detalhes do evento:`, event);
+      // Optionally, you can try to reconnect here or set state to allow manual reconnection
+      // For now, just log and set state to idle if it was recognizing or stopping
+      if (streamingState === "recognizing" || streamingState === "stopping") {
+        setStreamingState("idle");
+      }
+       if (ws.current && ws.current === event.target) { // Check if it's the current WebSocket instance
+        ws.current = null; // Clear the ref if this instance is closed
+      }
+    };
+  }, [streamingState, toast]); // Added toast
+
+  useEffect(() => {
+    connectWebSocket(); // Connect on component mount
+
+    return () => { // Cleanup on component unmount
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+        console.log("[Client] Fechando WebSocket ao desmontar o componente...");
+        ws.current.close(1000, "Component unmounting");
+      }
+      ws.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Connect only once on mount
+
   const isSpeechRecognitionSupported = useCallback(() => {
-    const supported = typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
-    console.log("[Client] SpeechRecognition supported:", supported);
-    return supported;
+    return typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
   }, []);
 
   useEffect(() => {
@@ -44,40 +132,39 @@ export default function LinguaVoxPage() {
   }, [toast, isSpeechRecognitionSupported]);
 
   const startRecognition = useCallback(() => {
-    console.log("[Client] Attempting to start recognition. Current state:", streamingState, "Source language:", sourceLanguage);
+    console.log("[Client] Tentando iniciar reconhecimento. Estado atual:", streamingState, "Idioma Fonte:", sourceLanguage);
     if (!isSpeechRecognitionSupported()) {
       setError("Reconhecimento de fala não suportado.");
       setStreamingState("error");
-      toast({ title: "Erro Crítico", description: "API de Reconhecimento de Fala não disponível (verificação em startRecognition).", variant: "destructive" });
-      console.error("[Client] SpeechRecognition not supported (checked in startRecognition).");
+      toast({ title: "Erro Crítico", description: "API de Reconhecimento de Fala não disponível.", variant: "destructive" });
       return;
     }
 
     if (streamingState === "recognizing") {
-      console.warn("[Client] Attempting to start recognition when already in progress.");
+      console.warn("[Client] Tentando iniciar reconhecimento quando já está em progresso.");
       return;
     }
 
     setStreamingState("recognizing");
     setError(null);
-    setTranscribedText(""); // Limpa transcrição anterior ao iniciar uma nova
+    setTranscribedText("");
     setInterimTranscribedText("");
+    setTranslatedText(""); // Clear previous translation
     toast({ title: "Microfone Ativado", description: "Iniciando reconhecimento de fala..." });
 
     const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognitionAPI) {
         setError("API de Reconhecimento de Fala não encontrada no navegador.");
         setStreamingState("error");
-        toast({ title: "Erro Crítico", description: "API de Reconhecimento de Fala não encontrada no objeto window.", variant: "destructive" });
-        console.error("[Client] SpeechRecognitionAPI not found in window object.");
+        toast({ title: "Erro Crítico", description: "API de Reconhecimento de Fala não encontrada.", variant: "destructive" });
         return;
     }
     
     try {
       recognition = new SpeechRecognitionAPI();
     } catch (e: any) {
-      console.error("[Client] Error creating SpeechRecognition instance:", e);
-      setError(`Erro ao criar instância de SpeechRecognition: ${e.message}`);
+      console.error("[Client] Erro ao criar instância de SpeechRecognition:", e);
+      setError(`Erro ao criar SpeechRecognition: ${e.message}`);
       setStreamingState("error");
       toast({ title: "Erro de Inicialização", description: `Não foi possível criar SpeechRecognition: ${e.message}`, variant: "destructive" });
       return;
@@ -85,12 +172,19 @@ export default function LinguaVoxPage() {
     
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = sourceLanguage;
-
-    console.log(`[Client] SpeechRecognition instance created. Language: ${sourceLanguage}`);
+    // Map 2-letter codes to BCP 47 language tags for Web Speech API
+    const speechLang = sourceLanguage === "en" ? "en-US" :
+                       sourceLanguage === "es" ? "es-ES" :
+                       sourceLanguage === "fr" ? "fr-FR" :
+                       sourceLanguage === "de" ? "de-DE" :
+                       sourceLanguage === "it" ? "it-IT" :
+                       sourceLanguage === "pt" ? "pt-BR" :
+                       sourceLanguage; // Fallback for other codes, might need adjustment
+    recognition.lang = speechLang;
+    console.log(`[Client] Instância SpeechRecognition criada. Idioma: ${recognition.lang}`);
 
     recognition.onstart = () => {
-      console.log("[Client] SpeechRecognition started successfully.");
+      console.log("[Client] SpeechRecognition iniciado com sucesso.");
       setStreamingState("recognizing");
     };
 
@@ -106,49 +200,65 @@ export default function LinguaVoxPage() {
         }
       }
       
-      if (final_transcript) {
-         setTranscribedText(prev => (prev ? prev.trim() + " " : "") + final_transcript.trim());
+      if (final_transcript.trim()) {
+         const newFinalText = final_transcript.trim();
+         setTranscribedText(prev => (prev ? prev.trim() + " " : "") + newFinalText);
+         
+         if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+           console.log(`[Client] Enviando texto final para tradução: "${newFinalText}"`);
+           setIsTranslating(true);
+           ws.current.send(JSON.stringify({
+             action: "translate",
+             text: newFinalText,
+             sourceLanguage: sourceLanguage, // Send 2-letter code
+             targetLanguage: targetLanguage  // Send 2-letter code
+           }));
+         } else {
+           console.warn("[Client] WebSocket não está aberto. Não é possível enviar texto para tradução.");
+           setError("Conexão WebSocket perdida. Não é possível traduzir.");
+           setIsTranslating(false);
+           // Reconnect if ws.current is null
+           if (!ws.current) {
+             console.log("[Client] Tentando reconectar WebSocket...");
+             connectWebSocket();
+           }
+         }
       }
       setInterimTranscribedText(interim_transcript.trim());
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      console.error("[Client] SpeechRecognition Error Event:", event);
+      console.error("[Client] Erro no SpeechRecognition:", event);
       let errMessage = `Erro no reconhecimento: ${event.error}`;
-      if (event.error === 'network') {
-        errMessage = "Erro de rede durante o reconhecimento. Verifique sua conexão.";
-      } else if (event.error === 'no-speech') {
-        errMessage = "Nenhuma fala detectada. Tente falar mais alto ou verifique o microfone.";
-      } else if (event.error === 'audio-capture') {
-        errMessage = "Falha na captura de áudio. Verifique as permissões do microfone.";
-      } else if (event.error === 'not-allowed') {
-        errMessage = "Permissão para usar o microfone negada ou não solicitada. Verifique as configurações de permissão do site no navegador.";
-      } else if (event.error === 'language-not-supported') {
-        errMessage = `O idioma '${sourceLanguage}' não é suportado pelo reconhecimento de fala do seu navegador.`;
-      } else if (event.message) {
-        errMessage += `. Detalhes: ${event.message}`;
-      }
+      // ... (error messages as before)
+      if (event.error === 'network') errMessage = "Erro de rede durante o reconhecimento.";
+      else if (event.error === 'no-speech') errMessage = "Nenhuma fala detectada.";
+      else if (event.error === 'audio-capture') errMessage = "Falha na captura de áudio. Verifique permissões.";
+      else if (event.error === 'not-allowed') errMessage = "Permissão do microfone negada.";
+      else if (event.error === 'language-not-supported') errMessage = `Idioma '${recognition?.lang}' não suportado.`;
+      else if (event.message) errMessage += `. Detalhes: ${event.message}`;
+      
       setError(errMessage);
       setStreamingState("error");
       toast({ title: "Erro de Reconhecimento", description: errMessage, variant: "destructive" });
-      if (recognition && (streamingState === "recognizing" || streamingState === "stopping") ) { // Ensure it stops only if it was trying to run
+      if (recognition && (streamingState === "recognizing" || streamingState === "stopping")) {
         recognition.stop();
       }
     };
 
     recognition.onend = () => {
-      console.log("[Client] SpeechRecognition ended. Current state:", streamingState);
+      console.log("[Client] SpeechRecognition finalizado. Estado atual:", streamingState);
       if (streamingState === "recognizing" || streamingState === "stopping") {
         setStreamingState("idle");
         setInterimTranscribedText(""); 
       }
     };
     
-    console.log("[Client] Calling recognition.start()...");
+    console.log("[Client] Chamando recognition.start()...");
     try {
       recognition.start();
     } catch (e: any) {
-      console.error("[Client] Error calling recognition.start():", e);
+      console.error("[Client] Erro ao chamar recognition.start():", e);
       setError(`Erro ao iniciar reconhecimento: ${e.message}`);
       setStreamingState("error");
       toast({ title: "Erro ao Iniciar", description: `Não foi possível iniciar o reconhecimento: ${e.message}`, variant: "destructive" });
@@ -156,32 +266,35 @@ export default function LinguaVoxPage() {
         recognition.stop();
       }
     }
-
-  }, [sourceLanguage, toast, streamingState, isSpeechRecognitionSupported]);
+  }, [sourceLanguage, targetLanguage, toast, streamingState, isSpeechRecognitionSupported, connectWebSocket]);
 
   const stopRecognition = useCallback(() => {
-    console.log("[Client] Attempting to stop recognition...");
+    console.log("[Client] Tentando parar reconhecimento...");
     setStreamingState("stopping");
     if (recognition) {
       try {
         recognition.stop();
-        console.log("[Client] recognition.stop() called.");
+        console.log("[Client] recognition.stop() chamado.");
       } catch (e: any) {
-        console.error("[Client] Error calling recognition.stop():", e);
-        // Mesmo se stop() falhar, tentamos garantir o estado idle.
+        console.error("[Client] Erro ao chamar recognition.stop():", e);
         setStreamingState("idle"); 
       }
     } else {
-       // Se recognition for null, mas estávamos tentando parar, apenas mudamos o estado.
        setStreamingState("idle");
     }
   }, []);
 
   const handleToggleStreaming = () => {
-    console.log("[Client] handleToggleStreaming called. Current state:", streamingState);
+    console.log("[Client] handleToggleStreaming chamado. Estado atual:", streamingState);
     if (streamingState === "recognizing") {
       stopRecognition();
     } else if (streamingState === "idle" || streamingState === "error") {
+       if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+        console.log("[Client] WebSocket não está conectado. Tentando reconectar antes de iniciar o reconhecimento...");
+        connectWebSocket(); // Try to reconnect
+        // Optionally, wait for connection before starting recognition, or let startRecognition handle it.
+        // For simplicity, we'll proceed and let startRecognition or onresult handle WebSocket state.
+      }
       startRecognition();
     }
   };
@@ -189,23 +302,27 @@ export default function LinguaVoxPage() {
   useEffect(() => {
     return () => {
       if (recognition) {
-        console.log("[Client] Component unmounting, aborting SpeechRecognition if active.");
+        console.log("[Client] Componente desmontando, abortando SpeechRecognition se ativo.");
         recognition.abort(); 
         recognition = null;
       }
     };
   }, []);
 
-
   const StreamButtonIcon = streamingState === "recognizing" ? MicOff : Mic;
   let streamButtonText = "Iniciar Transcrição";
   if (streamingState === "recognizing") streamButtonText = "Parar Transcrição";
   if (streamingState === "stopping") streamButtonText = "Parando...";
   
-  const isButtonDisabled = streamingState === "stopping"; // Simplificado: só desabilita se estiver parando.
-                                                       // Se houver erro, o usuário pode tentar novamente.
-                                                       // A checagem de suporte já é feita em startRecognition.
-  const isLoading = streamingState === "stopping";
+  const isButtonDisabled = streamingState === "stopping";
+  const isLoading = streamingState === "stopping" || isTranslating;
+
+  // Use 2-letter codes for LanguageSelector values
+  const languageSelectorItems = supportedLanguages.map(lang => ({
+    ...lang,
+    // code remains as 2-letter for selection, mapping happens in startRecognition for WebSpeech API
+  }));
+
 
   return (
     <div className="flex flex-col items-center min-h-screen p-4 md:p-8 bg-background text-foreground">
@@ -214,7 +331,7 @@ export default function LinguaVoxPage() {
           <LinguaVoxLogo className="h-12 w-auto" />
         </div>
         <p className="text-muted-foreground text-lg">
-          Transcrição de Áudio em Tempo Real (no Navegador)
+          Transcrição e Tradução de Áudio em Tempo Real
         </p>
       </header>
 
@@ -223,38 +340,38 @@ export default function LinguaVoxPage() {
           <CardHeader>
             <CardTitle className="text-2xl flex items-center gap-2">
               <Edit3 className="text-primary" />
-              Transcritor de Fala (Local)
+              Transcritor e Tradutor
             </CardTitle>
             <CardDescription>
-              Selecione o idioma de origem e inicie para transcrição em tempo real usando a API Web Speech do seu navegador.
+              Selecione os idiomas, inicie a transcrição e veja a tradução em tempo real.
                <br/>
-              <span className="text-xs text-muted-foreground">Nota: A qualidade e suporte a idiomas dependem do seu navegador. Verifique as permissões do microfone.</span>
+              <span className="text-xs text-muted-foreground">Transcrição via API Web Speech do navegador. Tradução via servidor.</span>
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-1 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <LanguageSelector
                 id="source-language"
-                label="Idioma de Origem da Fala"
+                label="Idioma de Origem (Fala)"
                 value={sourceLanguage}
                 onValueChange={(value) => {
                   if (streamingState !== "recognizing" && streamingState !== "stopping") {
                     setSourceLanguage(value);
-                    console.log("[Client] Source language changed to:", value);
-                  } else {
-                    console.log("[Client] Cannot change language while recognizing or stopping.");
+                    console.log("[Client] Idioma Fonte alterado para:", value);
                   }
                 }}
-                languages={supportedLanguages.map(lang => ({
-                    ...lang,
-                    code: lang.code === "en" ? "en-US" : 
-                          lang.code === "es" ? "es-ES" :
-                          lang.code === "fr" ? "fr-FR" :
-                          lang.code === "de" ? "de-DE" :
-                          lang.code === "it" ? "it-IT" :
-                          lang.code === "pt" ? "pt-BR" :
-                          lang.code 
-                }))}
+                languages={languageSelectorItems}
+                disabled={streamingState === "recognizing" || streamingState === "stopping"}
+              />
+              <LanguageSelector
+                id="target-language"
+                label="Idioma de Destino (Tradução)"
+                value={targetLanguage}
+                onValueChange={(value) => {
+                    setTargetLanguage(value);
+                    console.log("[Client] Idioma Destino alterado para:", value);
+                }}
+                languages={languageSelectorItems}
                 disabled={streamingState === "recognizing" || streamingState === "stopping"}
               />
             </div>
@@ -275,8 +392,11 @@ export default function LinguaVoxPage() {
                 )}
                 {streamButtonText}
               </Button>
-              {(streamingState === "recognizing") && (
+              {(streamingState === "recognizing") && !isTranslating && (
                  <p className="text-sm text-primary animate-pulse">Reconhecendo fala...</p>
+              )}
+              {isTranslating && (
+                 <p className="text-sm text-accent animate-pulse">Traduzindo...</p>
               )}
             </div>
 
@@ -287,11 +407,12 @@ export default function LinguaVoxPage() {
               </div>
             )}
             
-            {(transcribedText || interimTranscribedText) && (
-              <div className="mt-6 space-y-3">
-                <div className="flex justify-between items-center">
-                  <h3 className="text-xl font-semibold font-headline">Transcrição:</h3>
-                </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+              <div>
+                <h3 className="text-xl font-semibold font-headline mb-2 flex items-center gap-2">
+                  <Mic className="text-primary"/>
+                  Transcrição:
+                </h3>
                 <Textarea
                   value={transcribedText + (interimTranscribedText ? (transcribedText ? " " : "") + interimTranscribedText : "")}
                   readOnly
@@ -300,13 +421,28 @@ export default function LinguaVoxPage() {
                   aria-label="Texto transcrito"
                 />
               </div>
-            )}
+              <div>
+                <h3 className="text-xl font-semibold font-headline mb-2 flex items-center gap-2">
+                  <LanguagesIcon className="text-accent"/>
+                  Tradução:
+                </h3>
+                <Textarea
+                  value={translatedText}
+                  readOnly
+                  rows={8}
+                  className="bg-muted/50 border-border text-lg p-4 rounded-md shadow-inner"
+                  aria-label="Texto traduzido"
+                  placeholder={isTranslating ? "Traduzindo..." : "A tradução aparecerá aqui..."}
+                />
+              </div>
+            </div>
+
           </CardContent>
         </Card>
       </main>
       <footer className="w-full max-w-3xl mt-12 text-center text-sm text-muted-foreground">
         <p>&copy; {new Date().getFullYear()} LinguaVox. Todos os direitos reservados.</p>
-        <p className="mt-1">Transcrição de áudio local usando a API Web Speech do navegador.</p>
+        <p className="mt-1">Transcrição local via Web Speech API. Tradução via servidor Genkit.</p>
       </footer>
     </div>
   );
