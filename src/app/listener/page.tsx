@@ -237,10 +237,8 @@ export default function ListenerPage() {
           setLastMessage(`Texto traduzido recebido para ${serverMessage.targetLanguage}: "${serverMessage.text.substring(0,30)}..." (${new Date().toLocaleTimeString()})`);
 
           const textToSpeak = serverMessage.text;
-          // Regex para dividir em sentenças. Pode precisar de ajustes para casos mais complexos.
           const sentences = textToSpeak.match(/[^.!?]+[.!?]+|\s*[^.!?]+$/g) || [];
 
-          // Se a regex não encontrar nada (ex: texto sem pontuação), trata o texto todo como uma sentença
           if (sentences.length === 0 && textToSpeak.trim()) {
             sentences.push(textToSpeak.trim());
           }
@@ -248,7 +246,7 @@ export default function ListenerPage() {
           let utterancesAddedCount = 0;
           sentences.forEach(sentence => {
             const trimmedSentence = sentence.trim();
-            if (trimmedSentence) { // Garante que a sentença não está vazia após o trim
+            if (trimmedSentence) { 
               const utterance = new SpeechSynthesisUtterance(trimmedSentence);
               utterance.lang = serverMessage.targetLanguage; 
               utteranceQueueRef.current.push(utterance);
@@ -426,4 +424,3 @@ export default function ListenerPage() {
   );
 }
 
-    
