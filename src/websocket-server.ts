@@ -40,9 +40,7 @@ async function processAndSendAudio(ws: WebSocket) {
     clientState.inactivityTimer = null;
   }
 
-  const reader = new FileReader(); // FileReader não existe no Node.js diretamente, precisamos de uma alternativa se isso fosse server-side puro sem 'ws' blobs. Mas 'Blob' de 'ws' deve funcionar.
-                           // No entanto, para converter Blob para Data URI no Node.js, precisamos de Buffer.
-  
+  // Converter Blob para Data URI usando Buffer (adequado para Node.js)
   const arrayBuffer = await combinedBlob.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
   const mimeType = combinedBlob.type || 'audio/webm'; // fallback se o tipo não estiver lá
@@ -92,7 +90,7 @@ wss.on('connection', (ws: WebSocket) => {
 
     try {
       const dataString = message.toString();
-      let parsedData: Partial<TranslateAudioInput & { audioChunkDataUri?: string }>; // Usamos audioChunkDataUri para o pedaço
+      let parsedData: Partial<TranslateAudioInput & { audioChunkDataUri?: string, audioDataUri?: string }>;
 
       try {
         parsedData = JSON.parse(dataString);
@@ -110,7 +108,7 @@ wss.on('connection', (ws: WebSocket) => {
       if (parsedData.targetLanguage) clientState.targetLanguage = parsedData.targetLanguage;
 
 
-      // O cliente agora envia audioDataUri para cada chunk
+      // O cliente envia audioDataUri para cada chunk
       const audioDataUriChunk = parsedData.audioDataUri; 
 
       if (!audioDataUriChunk || !clientState.sourceLanguage || !clientState.targetLanguage) {
@@ -124,7 +122,7 @@ wss.on('connection', (ws: WebSocket) => {
       
       const base64Marker = ';base64,';
       const base64StartIndex = audioDataUriChunk.indexOf(base64Marker);
-      const mimeTypePart = audioDataUriChunk.substring(5, base64StartIndex); // e.g. audio/webm;codecs=opus
+      
 
       if (base64StartIndex === -1 || audioDataUriChunk.substring(base64StartIndex + base64Marker.length).trim() === '') {
         const errorMsg = 'Formato de audioDataUri inválido ou dados de áudio ausentes após a codificação base64.';
@@ -134,6 +132,7 @@ wss.on('connection', (ws: WebSocket) => {
         }
         return;
       }
+      const mimeTypePart = audioDataUriChunk.substring(5, base64StartIndex); // e.g. audio/webm;codecs=opus
       
       // Converter o data URI do chunk de volta para Blob
       const base64Data = audioDataUriChunk.substring(base64StartIndex + base64Marker.length);
@@ -201,6 +200,4 @@ wss.on('connection', (ws: WebSocket) => {
 wss.on('error', (error: Error) => {
   console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error.message, error);
 });
-    
-
     
