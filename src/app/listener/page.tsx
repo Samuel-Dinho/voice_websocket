@@ -3,7 +3,7 @@
 
 import { LinguaVoxLogo } from "@/components/icons/LinguaVoxLogo";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Volume2, WifiOff, Loader2, Mic } from "lucide-react"; // Added Mic here
+import { Volume2, WifiOff, Loader2, Mic } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
@@ -11,13 +11,11 @@ type ListenerState = "connecting" | "connected" | "disconnected" | "error";
 
 export default function ListenerPage() {
   const ws = useRef<WebSocket | null>(null);
-  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
-  const [audioSrc, setAudioSrc] = useState<string | null>(null);
   const [listenerState, setListenerState] = useState<ListenerState>("connecting");
   const [lastMessage, setLastMessage] = useState<string | null>(null);
-  const audioQueueRef = useRef<string[]>([]);
-  const [isPlaying, setIsPlaying] = useState(false);
-
+  const utteranceQueueRef = useRef<SpeechSynthesisUtterance[]>([]);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
 
   const getWebSocketUrl = () => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -25,37 +23,55 @@ export default function ListenerPage() {
     return `${protocol}//${window.location.hostname}:${wsPort}`;
   };
 
-  const playNextInQueue = () => {
-    if (audioQueueRef.current.length > 0 && audioPlayerRef.current) {
-      const nextAudioSrc = audioQueueRef.current.shift(); // Get and remove the first item
-      if (nextAudioSrc) {
-        setAudioSrc(nextAudioSrc); // This will trigger the useEffect to play
+  useEffect(() => {
+    // Load voices
+    const loadVoices = () => {
+      const voices = window.speechSynthesis.getVoices();
+      if (voices.length > 0) {
+        setAvailableVoices(voices);
+        console.log("[Listener] Vozes de síntese carregadas:", voices.length);
       }
+    };
+    loadVoices();
+    // Some browsers load voices asynchronously.
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+  }, []);
+
+
+  const speakNextInQueue = () => {
+    if (isSpeaking || utteranceQueueRef.current.length === 0) {
+      if (utteranceQueueRef.current.length === 0) setIsSpeaking(false);
+      return;
+    }
+
+    setIsSpeaking(true);
+    const utterance = utteranceQueueRef.current.shift();
+    if (utterance) {
+      console.log("[Listener] Tentando falar:", utterance.text.substring(0, 30) + "...", "Idioma:", utterance.lang);
+      
+      utterance.onstart = () => {
+        console.log("[Listener] Síntese de fala iniciada.");
+        setLastMessage(`Falando: "${utterance.text.substring(0,20)}..."`);
+      };
+      utterance.onend = () => {
+        console.log("[Listener] Síntese de fala finalizada.");
+        setIsSpeaking(false);
+        speakNextInQueue(); // Try to speak next item in queue
+      };
+      utterance.onerror = (event) => {
+        console.error("[Listener] Erro na síntese de fala:", event.error);
+        setLastMessage(`Erro ao falar: ${event.error}`);
+        setIsSpeaking(false);
+        speakNextInQueue(); // Try next item even if current errors
+      };
+      window.speechSynthesis.speak(utterance);
     } else {
-      setIsPlaying(false); // No more audio in queue
+      setIsSpeaking(false);
     }
   };
   
-  useEffect(() => {
-    if (audioSrc && audioPlayerRef.current) {
-      audioPlayerRef.current.src = audioSrc;
-      audioPlayerRef.current.load(); // Important to load new src
-      audioPlayerRef.current.play()
-        .then(() => {
-            setIsPlaying(true);
-            console.log("[Listener] Reproduzindo áudio:", audioSrc.substring(0, 50) + "...");
-        })
-        .catch(error => {
-          console.error("[Listener] Erro ao tentar reproduzir áudio:", error);
-          setIsPlaying(false);
-          // Browsers often block autoplay without user interaction.
-          // Could add a button "Click to enable audio"
-          setLastMessage("Erro ao reproduzir áudio. Pode ser necessário interação do usuário.");
-          playNextInQueue(); // Try next if current fails
-        });
-    }
-  }, [audioSrc]);
-
 
   useEffect(() => {
     const WS_URL = getWebSocketUrl();
@@ -67,7 +83,7 @@ export default function ListenerPage() {
     ws.current.onopen = () => {
       console.log("[Listener] WebSocket conectado.");
       setListenerState("connected");
-      setLastMessage("Conectado ao servidor. Aguardando áudio...");
+      setLastMessage("Conectado ao servidor. Aguardando texto para falar...");
       if (ws.current) {
         ws.current.send(JSON.stringify({ action: "subscribe_audio" }));
         console.log("[Listener] Mensagem de inscrição enviada.");
@@ -79,11 +95,29 @@ export default function ListenerPage() {
         const serverMessage = JSON.parse(event.data as string);
         console.log("[Listener] Mensagem recebida:", serverMessage.type);
 
-        if (serverMessage.type === "audio_chunk" && serverMessage.audioDataUri) {
-          setLastMessage(`Chunk de áudio recebido (${new Date().toLocaleTimeString()})`);
-          audioQueueRef.current.push(serverMessage.audioDataUri);
-          if (!isPlaying && audioPlayerRef.current && audioPlayerRef.current.paused) {
-            playNextInQueue();
+        if (serverMessage.type === "translated_text_for_listener" && serverMessage.text && serverMessage.targetLanguage) {
+          setLastMessage(`Texto traduzido recebido para ${serverMessage.targetLanguage} (${new Date().toLocaleTimeString()})`);
+          
+          const utterance = new SpeechSynthesisUtterance(serverMessage.text);
+          
+          // Try to set the voice based on targetLanguage
+          const targetLangPrefix = serverMessage.targetLanguage.split('-')[0]; // e.g., "en" from "en-US"
+          const voice = availableVoices.find(v => 
+            v.lang.startsWith(serverMessage.targetLanguage) || v.lang.startsWith(targetLangPrefix)
+          );
+
+          if (voice) {
+            utterance.voice = voice;
+            utterance.lang = voice.lang;
+            console.log(`[Listener] Voz encontrada e definida para ${voice.name} (${voice.lang})`);
+          } else {
+            utterance.lang = serverMessage.targetLanguage; // Fallback to setting lang directly
+            console.warn(`[Listener] Nenhuma voz específica encontrada para ${serverMessage.targetLanguage}. Usando padrão do navegador para o idioma, se disponível.`);
+          }
+          
+          utteranceQueueRef.current.push(utterance);
+          if (!isSpeaking) {
+            speakNextInQueue();
           }
         } else if (serverMessage.message) {
           setLastMessage(serverMessage.message);
@@ -101,13 +135,16 @@ export default function ListenerPage() {
       console.error("[Listener] Erro no WebSocket:", event);
       setListenerState("error");
       setLastMessage("Erro na conexão WebSocket.");
+      setIsSpeaking(false);
     };
 
     ws.current.onclose = (event) => {
       console.log(`[Listener] WebSocket desconectado. Código: ${event.code}, Limpo: ${event.wasClean}`);
       setListenerState("disconnected");
       setLastMessage("Desconectado do servidor.");
-      setIsPlaying(false);
+      setIsSpeaking(false);
+      window.speechSynthesis.cancel(); // Stop any ongoing speech synthesis
+      utteranceQueueRef.current = [];
     };
 
     return () => {
@@ -116,9 +153,11 @@ export default function ListenerPage() {
         ws.current.close(1000, "Listener page unmounting");
       }
       ws.current = null;
+      window.speechSynthesis.cancel(); // Ensure speech synthesis is stopped on unmount
+      utteranceQueueRef.current = [];
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Connect only once on mount
+  }, [availableVoices]); // Re-run if availableVoices changes
 
   return (
     <div className="flex flex-col items-center min-h-screen p-4 md:p-8 bg-background text-foreground">
@@ -127,7 +166,7 @@ export default function ListenerPage() {
           <LinguaVoxLogo className="h-12 w-auto" />
         </div>
         <p className="text-muted-foreground text-lg text-center">
-          Página do Ouvinte - Áudio em Tempo Real
+          Página do Ouvinte - Reprodução da Tradução
         </p>
         <div className="text-center mt-2">
             <Link href="/" legacyBehavior>
@@ -144,10 +183,10 @@ export default function ListenerPage() {
           <CardHeader>
             <CardTitle className="text-2xl flex items-center gap-2">
               <Volume2 className="text-primary" />
-              Receptor de Áudio
+              Receptor de Tradução Falada
             </CardTitle>
             <CardDescription>
-              Esta página reproduzirá o áudio capturado pela página de transcrição em tempo real.
+              Esta página reproduzirá automaticamente a tradução do áudio capturado na página de transcrição.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -158,12 +197,12 @@ export default function ListenerPage() {
                   Conectando ao servidor...
                 </div>
               )}
-              {listenerState === "connected" && !isPlaying && audioQueueRef.current.length === 0 && (
-                <p className="text-muted-foreground">Aguardando áudio para reproduzir...</p>
+              {listenerState === "connected" && !isSpeaking && utteranceQueueRef.current.length === 0 && (
+                <p className="text-muted-foreground">Aguardando tradução para falar...</p>
               )}
-              {listenerState === "connected" && (isPlaying || audioQueueRef.current.length > 0) && (
+              {listenerState === "connected" && (isSpeaking || utteranceQueueRef.current.length > 0) && (
                  <p className="text-primary animate-pulse">
-                    {isPlaying ? "Reproduzindo áudio..." : "Áudio na fila..."}
+                    {isSpeaking ? "Falando tradução..." : "Tradução na fila para falar..."}
                 </p>
               )}
               {(listenerState === "disconnected" || listenerState === "error") && (
@@ -173,24 +212,7 @@ export default function ListenerPage() {
                 </div>
               )}
             </div>
-            <audio 
-                ref={audioPlayerRef} 
-                controls 
-                className="w-full"
-                onEnded={() => {
-                    console.log("[Listener] Reprodução de áudio finalizada.");
-                    setIsPlaying(false);
-                    playNextInQueue();
-                }}
-                onError={(e) => {
-                    console.error("[Listener] Erro no elemento de áudio:", e);
-                    setIsPlaying(false);
-                    setLastMessage("Erro ao carregar/reproduzir áudio.");
-                    playNextInQueue(); // Try next if current fails
-                }}
-            >
-              Seu navegador não suporta o elemento de áudio.
-            </audio>
+            
             {lastMessage && (
               <p className="text-sm text-muted-foreground text-center mt-2">
                 Status: {lastMessage}
@@ -205,3 +227,4 @@ export default function ListenerPage() {
     </div>
   );
 }
+    

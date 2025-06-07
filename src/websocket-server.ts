@@ -12,7 +12,6 @@ const wss = new WebSocketServer({ port: PORT });
 
 console.log(`[WebSocketServer] Iniciado em ws://localhost:${PORT}`);
 
-// Store clients who want to listen to audio
 const audioSubscribers = new Set<WebSocket>();
 
 wss.on('connection', (ws: WebSocket) => {
@@ -36,26 +35,12 @@ wss.on('connection', (ws: WebSocket) => {
       audioSubscribers.add(ws);
       console.log('[WebSocketServer] Novo assinante de áudio adicionado. Total:', audioSubscribers.size);
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ message: 'Inscrito para receber chunks de áudio.' }));
+        ws.send(JSON.stringify({ message: 'Inscrito para receber áudio traduzido.' }));
       }
     } else if (parsedData.action === 'process_speech' && parsedData.transcribedText && parsedData.sourceLanguage && parsedData.targetLanguage && parsedData.audioDataUri) {
       console.log(`[WebSocketServer] Requisição de process_speech recebida. Texto: "${parsedData.transcribedText.substring(0,30)}..."`);
       
-      // 1. Retransmit audio to subscribers
-      if (parsedData.audioDataUri) {
-        console.log(`[WebSocketServer] Retransmitindo audioDataUri para ${audioSubscribers.size} assinantes.`);
-        audioSubscribers.forEach(subscriber => {
-          if (subscriber.readyState === WebSocket.OPEN) {
-            try {
-              subscriber.send(JSON.stringify({ type: 'audio_chunk', audioDataUri: parsedData.audioDataUri }));
-            } catch (sendError) {
-              console.error('[WebSocketServer] Erro ao enviar audio_chunk para assinante:', sendError);
-            }
-          }
-        });
-      }
-
-      // 2. Process translation
+      // Process translation
       try {
         const translationInput: ImproveTranslationAccuracyInput = {
           text: parsedData.transcribedText,
@@ -64,10 +49,30 @@ wss.on('connection', (ws: WebSocket) => {
         };
         const translationOutput = await improveTranslationAccuracy(translationInput);
         
-        if (ws.readyState === WebSocket.OPEN) { // Send translation back to original sender
+        // Send translation back to original sender
+        if (ws.readyState === WebSocket.OPEN) { 
           ws.send(JSON.stringify({ translatedText: translationOutput.translatedText }));
           console.log(`[WebSocketServer] Tradução enviada para o cliente original: "${translationOutput.translatedText.substring(0,30)}..."`);
         }
+
+        // Send translated text to audio subscribers for speech synthesis
+        if (translationOutput.translatedText) {
+          console.log(`[WebSocketServer] Enviando texto traduzido "${translationOutput.translatedText.substring(0,30)}..." para ${audioSubscribers.size} ouvintes.`);
+          audioSubscribers.forEach(subscriber => {
+            if (subscriber.readyState === WebSocket.OPEN) {
+              try {
+                subscriber.send(JSON.stringify({ 
+                  type: 'translated_text_for_listener', 
+                  text: translationOutput.translatedText,
+                  targetLanguage: parsedData.targetLanguage 
+                }));
+              } catch (sendError) {
+                console.error('[WebSocketServer] Erro ao enviar translated_text_for_listener para assinante:', sendError);
+              }
+            }
+          });
+        }
+
       } catch (error: any) {
         console.error('[WebSocketServer] Erro ao chamar o fluxo de tradução:', error.message || error);
         let errorMessage = 'Erro interno do servidor ao traduzir.';
@@ -82,10 +87,6 @@ wss.on('connection', (ws: WebSocket) => {
       }
     } else {
       console.log('[WebSocketServer] Mensagem recebida não é uma ação válida ou faltam dados:', parsedData.action);
-      // Optional: send an error back to the client if the action is unrecognized
-      // if (ws.readyState === WebSocket.OPEN) {
-      //   ws.send(JSON.stringify({ error: `Ação desconhecida ou dados ausentes: ${parsedData.action}` }));
-      // }
     }
   });
 
@@ -115,5 +116,4 @@ wss.on('connection', (ws: WebSocket) => {
 wss.on('error', (error: Error) => {
   console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error.message, error);
 });
-
     
