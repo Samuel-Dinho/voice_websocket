@@ -30,7 +30,7 @@ export default function ListenerPage() {
       const voices = window.speechSynthesis.getVoices();
       if (voices.length > 0) {
         setAvailableVoices(voices);
-        console.log("[Listener] Vozes de síntese carregadas:", voices.length);
+        console.log("[Listener] Vozes de síntese carregadas:", voices.length, voices.map(v => ({name: v.name, lang: v.lang, default: v.default})));
       } else {
         console.log("[Listener] Lista de vozes vazia, aguardando onvoiceschanged.");
       }
@@ -40,12 +40,13 @@ export default function ListenerPage() {
     if (window.speechSynthesis.onvoiceschanged !== undefined) {
       window.speechSynthesis.onvoiceschanged = loadVoices;
     } else {
-        if(availableVoices.length === 0) {
-            setTimeout(loadVoices, 500);
+        if(availableVoices.length === 0) { // Check against current state
+            console.warn("[Listener] onvoiceschanged não suportado ou já disparado, tentando carregar vozes com setTimeout.");
+            setTimeout(loadVoices, 500); // Try again after a short delay
         }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // Empty dependency array: run once on mount.
 
 
   const speakNextInQueue = () => {
@@ -59,7 +60,7 @@ export default function ListenerPage() {
     setIsSpeaking(true);
     const utterance = utteranceQueueRef.current.shift();
     if (utterance) {
-      console.log("[Listener] Tentando falar:", utterance.text.substring(0, 30) + "...", "Idioma:", utterance.lang);
+      console.log("[Listener] Tentando falar:", utterance.text.substring(0, 30) + "...", "Idioma:", utterance.lang, "Voz:", utterance.voice?.name);
       
       utterance.onstart = () => {
         console.log("[Listener] Síntese de fala iniciada.");
@@ -71,7 +72,7 @@ export default function ListenerPage() {
         speakNextInQueue(); 
       };
       utterance.onerror = (event) => {
-        console.error("[Listener] Erro na síntese de fala:", event.error, "Texto:", utterance.text, "Evento completo:", event);
+        console.error(`[Listener] Erro na síntese de fala: ${event.error}. Texto: "${utterance.text.substring(0,30)}..." Detalhes do evento:`, event);
         setLastMessage(`Erro ao falar: ${event.error}`);
         setIsSpeaking(false);
         speakNextInQueue(); 
@@ -99,7 +100,7 @@ export default function ListenerPage() {
             speakNextInQueue();
         };
         unlockUtterance.onerror = (event) => {
-            console.error("[Listener] Erro na utterance de desbloqueio de áudio:", event.error);
+            console.error("[Listener] Erro na utterance de desbloqueio de áudio:", event.error, "Evento completo:", event);
             // Still try to speak pending items, maybe the main ones will work
             speakNextInQueue();
         };
@@ -142,27 +143,34 @@ export default function ListenerPage() {
           const targetLangLC = serverMessage.targetLanguage.toLowerCase();
           const targetLangPrefixLC = targetLangLC.split('-')[0];
 
-          let voice = availableVoices.find(v => 
-            v.lang.toLowerCase() === targetLangLC
-          );
-          if (!voice) {
-             voice = availableVoices.find(v => 
-                v.lang.toLowerCase().startsWith(targetLangPrefixLC) && v.default
-             );
+          if (availableVoices.length > 0) {
+            console.log('[Listener] Procurando voz para:', targetLangLC, '(prefixo:', targetLangPrefixLC, ') em', availableVoices.length, 'vozes.');
+            // console.log('[Listener] Vozes disponíveis no momento da seleção:', availableVoices.map(v => ({ name: v.name, lang: v.lang, default: v.default })));
           }
+
+
+          let voice = availableVoices.find(v => 
+            v.lang.toLowerCase().startsWith(targetLangPrefixLC) && v.default === true
+          );
+
           if (!voice) {
-             voice = availableVoices.find(v => 
-                v.lang.toLowerCase().startsWith(targetLangPrefixLC)
-             );
+            voice = availableVoices.find(v => 
+              v.lang.toLowerCase().startsWith(targetLangPrefixLC)
+            );
+          }
+          
+          if (!voice && targetLangLC !== targetLangPrefixLC) { // If targetLang was specific (e.g. en-gb) and not found by prefix
+            voice = availableVoices.find(v => v.lang.toLowerCase() === targetLangLC);
           }
           
           if (voice) {
             utterance.voice = voice;
-            utterance.lang = voice.lang; 
-            console.log(`[Listener] Voz encontrada e definida para ${voice.name} (${voice.lang}) para o texto: "${serverMessage.text.substring(0,30)}..."`);
+            utterance.lang = voice.lang; // Use the voice's specific lang tag
+            console.log(`[Listener] Voz encontrada e definida: ${voice.name} (${voice.lang}) para o texto: "${serverMessage.text.substring(0,30)}..."`);
           } else {
-            utterance.lang = serverMessage.targetLanguage; 
-            console.warn(`[Listener] Nenhuma voz específica encontrada para ${serverMessage.targetLanguage}. Usando padrão do navegador para o idioma (${utterance.lang}), se disponível. Texto: "${serverMessage.text.substring(0,30)}..."`);
+            utterance.lang = serverMessage.targetLanguage; // Set the target language on the utterance
+            const voiceCount = availableVoices.length;
+            console.warn(`[Listener] Nenhuma voz específica encontrada para ${serverMessage.targetLanguage} nas ${voiceCount} vozes disponíveis. Usando padrão do navegador para o idioma (${utterance.lang}). Texto: "${serverMessage.text.substring(0,30)}..."`);
           }
           
           utteranceQueueRef.current.push(utterance);
@@ -218,10 +226,10 @@ export default function ListenerPage() {
       }
       utteranceQueueRef.current = [];
       setIsSpeaking(false); 
-      // setAudioActivated(false); // Don't reset audioActivated on unmount, user might just be navigating away
+      // setAudioActivated(false); // Don't reset audioActivated on unmount
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, []); // availableVoices was removed to prevent re-connects
 
   return (
     <div className="flex flex-col items-center min-h-screen p-4 md:p-8 bg-background text-foreground">
@@ -296,6 +304,11 @@ export default function ListenerPage() {
              {availableVoices.length === 0 && listenerState === "connected" && (
                 <p className="text-xs text-muted-foreground text-center mt-2">
                     Carregando vozes de síntese... Se a fala não iniciar, verifique as configurações de TTS do seu sistema/navegador.
+                </p>
+            )}
+            {audioActivated && availableVoices.length > 0 && !isSpeaking && utteranceQueueRef.current.length === 0 && (
+                 <p className="text-xs text-muted-foreground text-center mt-2">
+                    Microfone de áudio ativado. {availableVoices.length} vozes de síntese disponíveis.
                 </p>
             )}
           </CardContent>
