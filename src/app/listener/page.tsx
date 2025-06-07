@@ -3,7 +3,7 @@
 
 import { LinguaVoxLogo } from "@/components/icons/LinguaVoxLogo";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Volume2, WifiOff, Loader2 } from "lucide-react";
+import { Volume2, WifiOff, Loader2, Mic } from "lucide-react"; // Added Mic here
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
@@ -205,5 +205,3 @@ export default function ListenerPage() {
     </div>
   );
 }
-
-    
