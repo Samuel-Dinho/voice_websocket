@@ -1,3 +1,4 @@
+
 'use server';
 
 /**
@@ -28,6 +29,7 @@ const TranslateAudioOutputSchema = z.object({
 export type TranslateAudioOutput = z.infer<typeof TranslateAudioOutputSchema>;
 
 export async function translateAudio(input: TranslateAudioInput): Promise<TranslateAudioOutput> {
+  // console.log('[translateAudio Flow] Received input. audioDataUri (start):', input.audioDataUri.substring(0, 100) + "...");
   return translateAudioFlow(input);
 }
 
@@ -35,10 +37,8 @@ const prompt = ai.definePrompt({
   name: 'translateAudioPrompt',
   input: {schema: TranslateAudioInputSchema},
   output: {schema: TranslateAudioOutputSchema},
-  prompt: `You are a real-time audio translator. You will receive audio data in {{{sourceLanguage}}} and must translate it to {{{targetLanguage}}}. You must accurately translate only the {{{sourceLanguage}}} language.
-
+  prompt: `Translate the following audio from {{{sourceLanguage}}} to {{{targetLanguage}}}.
 Audio: {{media url=audioDataUri}}
-
 Translation:`,
 });
 
@@ -48,8 +48,13 @@ const translateAudioFlow = ai.defineFlow(
     inputSchema: TranslateAudioInputSchema,
     outputSchema: TranslateAudioOutputSchema,
   },
-  async input => {
+  async (input: TranslateAudioInput) => {
+    console.log('[translateAudioFlow] Processing input. audioDataUri (start):', input.audioDataUri.substring(0, 200) + "...");
     const {output} = await prompt(input);
-    return output!;
+    if (!output) {
+        console.error('[translateAudioFlow] Prompt did not return an output.');
+        throw new Error('Translation prompt failed to produce output.');
+    }
+    return output;
   }
 );

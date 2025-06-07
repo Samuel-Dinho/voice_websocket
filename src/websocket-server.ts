@@ -28,11 +28,10 @@ const clientStates = new Map<WebSocket, ClientState>();
 async function processAndSendAudio(ws: WebSocket) {
   const clientState = clientStates.get(ws);
   if (!clientState || clientState.audioBuffer.length === 0 || !clientState.sourceLanguage || !clientState.targetLanguage) {
-    // console.log('[WebSocketServer] Nada para processar ou informações de idioma ausentes.');
     return;
   }
 
-  const combinedBlob = new Blob(clientState.audioBuffer, { type: clientState.audioBuffer[0].type });
+  const combinedBlob = new Blob(clientState.audioBuffer, { type: clientState.audioBuffer[0]?.type || 'audio/webm' });
   clientState.audioBuffer = []; // Limpar buffer após o processamento
 
   if (clientState.inactivityTimer) {
@@ -40,15 +39,14 @@ async function processAndSendAudio(ws: WebSocket) {
     clientState.inactivityTimer = null;
   }
 
-  // Converter Blob para Data URI usando Buffer (adequado para Node.js)
   const arrayBuffer = await combinedBlob.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
-  const mimeType = combinedBlob.type || 'audio/webm'; // fallback se o tipo não estiver lá
+  const mimeType = combinedBlob.type || 'audio/webm';
   const audioDataUri = `data:${mimeType};base64,${buffer.toString('base64')}`;
 
-
   if (audioDataUri.split(',')[1]?.length > 0) {
-    console.log(`[WebSocketServer] Enviando áudio acumulado (${(audioDataUri.length / 1024).toFixed(2)} KB) para tradução: ${clientState.sourceLanguage} -> ${clientState.targetLanguage}.`);
+    console.log(`[WebSocketServer] Enviando áudio acumulado. MimeType: ${mimeType}, Tamanho DataURI: ${(audioDataUri.length / 1024).toFixed(2)} KB.`);
+    console.log(`[WebSocketServer] Início do audioDataUri a ser enviado para o fluxo: ${audioDataUri.substring(0, 200)}...`);
     try {
       const translationOutput = await translateAudio({
         audioDataUri,
@@ -77,8 +75,8 @@ async function processAndSendAudio(ws: WebSocket) {
 
 wss.on('connection', (ws: WebSocket) => {
   console.log('[WebSocketServer] Cliente conectado');
-  clientStates.set(ws, { 
-    audioBuffer: [], 
+  clientStates.set(ws, {
+    audioBuffer: [],
     inactivityTimer: null,
     sourceLanguage: null,
     targetLanguage: null,
@@ -102,27 +100,23 @@ wss.on('connection', (ws: WebSocket) => {
         }
         return;
       }
-      
-      // Atualiza os idiomas se eles vierem na mensagem
+
       if (parsedData.sourceLanguage) clientState.sourceLanguage = parsedData.sourceLanguage;
       if (parsedData.targetLanguage) clientState.targetLanguage = parsedData.targetLanguage;
 
-
-      // O cliente envia audioDataUri para cada chunk
-      const audioDataUriChunk = parsedData.audioDataUri; 
+      const audioDataUriChunk = parsedData.audioDataUri;
 
       if (!audioDataUriChunk || !clientState.sourceLanguage || !clientState.targetLanguage) {
-        const errorMsg = 'Formato de mensagem inválido. Campos obrigatórios: audioDataUri (para o chunk), sourceLanguage, targetLanguage (podem ser enviados uma vez no início ou com cada chunk)';
+        const errorMsg = 'Formato de mensagem inválido. Campos obrigatórios: audioDataUri (para o chunk), sourceLanguage, targetLanguage.';
         console.warn(`[WebSocketServer] Mensagem inválida recebida (campos faltando): ${JSON.stringify(parsedData)}`);
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ error: errorMsg }));
         }
         return;
       }
-      
+
       const base64Marker = ';base64,';
       const base64StartIndex = audioDataUriChunk.indexOf(base64Marker);
-      
 
       if (base64StartIndex === -1 || audioDataUriChunk.substring(base64StartIndex + base64Marker.length).trim() === '') {
         const errorMsg = 'Formato de audioDataUri inválido ou dados de áudio ausentes após a codificação base64.';
@@ -132,27 +126,21 @@ wss.on('connection', (ws: WebSocket) => {
         }
         return;
       }
-      const mimeTypePart = audioDataUriChunk.substring(5, base64StartIndex); // e.g. audio/webm;codecs=opus
-      
-      // Converter o data URI do chunk de volta para Blob
+      const mimeTypePart = audioDataUriChunk.substring(5, base64StartIndex);
       const base64Data = audioDataUriChunk.substring(base64StartIndex + base64Marker.length);
       const byteString = Buffer.from(base64Data, 'base64');
       const newBlob = new Blob([byteString], { type: mimeTypePart });
 
       clientState.audioBuffer.push(newBlob);
-      // console.log(`[WebSocketServer] Chunk de áudio adicionado ao buffer. Total de chunks: ${clientState.audioBuffer.length}`);
-
 
       if (clientState.inactivityTimer) {
         clearTimeout(clientState.inactivityTimer);
       }
 
       if (clientState.audioBuffer.length >= AUDIO_CHUNKS_TO_ACCUMULATE) {
-        // console.log('[WebSocketServer] Buffer cheio, processando áudio.');
         await processAndSendAudio(ws);
       } else {
         clientState.inactivityTimer = setTimeout(async () => {
-          // console.log('[WebSocketServer] Timeout de inatividade, processando áudio.');
           await processAndSendAudio(ws);
         }, INACTIVITY_TIMEOUT_MS);
       }
@@ -161,7 +149,7 @@ wss.on('connection', (ws: WebSocket) => {
       console.error('[WebSocketServer] Erro ao processar mensagem ou acumular áudio:', error);
       let errorMessage = 'Erro ao processar mensagem ou durante a acumulação.';
       if (error instanceof Error) {
-          errorMessage = error.message; 
+          errorMessage = error.message;
       }
       if (ws.readyState === WebSocket.OPEN) {
         try {
@@ -200,4 +188,3 @@ wss.on('connection', (ws: WebSocket) => {
 wss.on('error', (error: Error) => {
   console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error.message, error);
 });
-    
