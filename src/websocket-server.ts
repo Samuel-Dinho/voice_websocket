@@ -13,13 +13,13 @@ console.log(`[WebSocketServer] Iniciado em ws://localhost:${PORT}`);
 
 const AUDIO_CHUNKS_TO_ACCUMULATE = 3; 
 const INACTIVITY_TIMEOUT_MS = 1500; 
-const PROCESSING_DELAY_MS = 3000; // Aumentado de 500 para 3000
+const PROCESSING_DELAY_MS = 3000; // Mantendo o delay aumentado
 
 interface ClientState {
   audioBuffer: Blob[];
   inactivityTimer: NodeJS.Timeout | null;
   sourceLanguage: string | null;
-  targetLanguage: string | null;
+  targetLanguage: string | null; // Ainda pode ser enviado pelo cliente, mas não usado pelo fluxo agora
   isProcessing: boolean; 
   messageQueue: Buffer[]; 
 }
@@ -57,29 +57,30 @@ async function processClientAudio(ws: WebSocket) {
   const audioDataUri = `data:${mimeType};base64,${buffer.toString('base64')}`;
 
   if (audioDataUri.split(',')[1]?.length > 0) {
-    console.log(`[WebSocketServer] Enviando áudio acumulado. MimeType: ${mimeType}, Tamanho DataURI: ${(audioDataUri.length / 1024).toFixed(2)} KB.`);
+    console.log(`[WebSocketServer] Enviando áudio acumulado para transcrição. MimeType: ${mimeType}, Tamanho DataURI: ${(audioDataUri.length / 1024).toFixed(2)} KB.`);
     console.log(`[WebSocketServer] Início do audioDataUri a ser enviado para o fluxo: ${audioDataUri.substring(0, 100)}...`);
     try {
-      const output = await translateAudio({
+      const output = await translateAudio({ // A função translateAudio agora só transcreve
         audioDataUri,
         sourceLanguage: clientState.sourceLanguage!,
-        targetLanguage: clientState.targetLanguage!, 
+        targetLanguage: clientState.targetLanguage!, // Passado, mas ignorado pelo fluxo por enquanto
       });
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ translatedText: output.translatedText }));
-        console.log(`[WebSocketServer] Texto traduzido enviado: "${output.translatedText}"`);
+        ws.send(JSON.stringify({ transcribedText: output.transcribedText })); // Alterado de translatedText para transcribedText
+        console.log(`[WebSocketServer] Texto transcrito enviado: "${output.transcribedText}"`);
       }
     } catch (error: any) {
-      console.error('[WebSocketServer] Erro ao traduzir áudio acumulado:', error.message || error);
-      let errorMessage = 'Erro ao processar áudio acumulado.';
+      console.error('[WebSocketServer] Erro ao transcrever áudio acumulado:', error.message || error);
+      let errorMessage = 'Erro ao processar áudio acumulado para transcrição.';
       let traceId: string | undefined;
       let errorDetails: any | undefined;
 
       if (error instanceof Error) { 
         errorMessage = error.message;
-        if ((error as any).name === 'GoogleGenerativeAIFetchError' || error.constructor.name === 'GoogleGenerativeAIFetchError') {
-            traceId = (error as any).traceId;
-            errorDetails = (error as any).errorDetails; // Supondo que o fluxo Genkit pode adicionar isso
+        const genkitError = error as any; // Para acessar propriedades como traceId, errorDetails
+        if (genkitError.name === 'GoogleGenerativeAIFetchError' || error.constructor.name === 'GoogleGenerativeAIFetchError') {
+            traceId = genkitError.traceId;
+            errorDetails = genkitError.errorDetails; 
             errorMessage = `[GoogleGenerativeAI Error]: ${error.message}`; 
             if (errorDetails) {
                 errorMessage += ` Details: ${JSON.stringify(errorDetails)}`;
@@ -95,7 +96,7 @@ async function processClientAudio(ws: WebSocket) {
       console.log(`[WebSocketServer] Enviando erro para o cliente: ${errorMessage}`);
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ 
-            error: `Erro do servidor (acumulado): ${errorMessage}`
+            error: `Erro do servidor (transcrição acumulada): ${errorMessage}`
         }));
       }
     }
@@ -127,7 +128,7 @@ wss.on('connection', (ws: WebSocket) => {
     audioBuffer: [],
     inactivityTimer: null,
     sourceLanguage: null,
-    targetLanguage: null,
+    targetLanguage: null, // Pode ser definido pelo cliente, mas não usado ativamente na transcrição
     isProcessing: false,
     messageQueue: [],
   });
@@ -151,11 +152,11 @@ wss.on('connection', (ws: WebSocket) => {
       }
 
       if (parsedData.sourceLanguage) clientState.sourceLanguage = parsedData.sourceLanguage;
-      if (parsedData.targetLanguage) clientState.targetLanguage = parsedData.targetLanguage;
+      if (parsedData.targetLanguage) clientState.targetLanguage = parsedData.targetLanguage; // Armazena, mas fluxo ignora
 
       const audioDataUriChunk = parsedData.audioDataUri;
 
-      if (!audioDataUriChunk || !clientState.sourceLanguage || !clientState.targetLanguage) {
+      if (!audioDataUriChunk || !clientState.sourceLanguage ) { // targetLanguage não é mais crucial para o fluxo atual
         console.warn(`[WebSocketServer] Mensagem inválida recebida (campos faltando): ${dataString.substring(0,100)}`);
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ error: 'Formato de mensagem inválido.' }));
@@ -224,11 +225,11 @@ wss.on('connection', (ws: WebSocket) => {
 
   try {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ message: 'Conectado com sucesso ao servidor WebSocket LinguaVox (com acumulação).' }));
-      console.log('[WebSocketServer] Mensagem de boas-vindas (acumulação) enviada ao cliente.');
+      ws.send(JSON.stringify({ message: 'Conectado com sucesso ao servidor WebSocket LinguaVox (modo transcrição).' }));
+      console.log('[WebSocketServer] Mensagem de boas-vindas (modo transcrição) enviada ao cliente.');
     }
   } catch (sendError) {
-    console.error('[WebSocketServer] Erro ao enviar mensagem de boas-vindas (acumulação):', sendError);
+    console.error('[WebSocketServer] Erro ao enviar mensagem de boas-vindas (modo transcrição):', sendError);
   }
 });
 

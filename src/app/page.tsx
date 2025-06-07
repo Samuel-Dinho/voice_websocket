@@ -5,7 +5,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { Mic, MicOff, Loader2, Volume2, AlertTriangle, Languages } from "lucide-react";
+import { Mic, MicOff, Loader2, AlertTriangle, Languages, Edit3 } from "lucide-react"; // Import Edit3 for transcription icon
 import { LanguageSelector } from "@/components/LanguageSelector";
 import { supportedLanguages } from "@/lib/languages";
 import { useToast } from "@/hooks/use-toast";
@@ -13,15 +13,15 @@ import { LinguaVoxLogo } from "@/components/icons/LinguaVoxLogo";
 import { Separator } from "@/components/ui/separator";
 
 const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || 'ws://localhost:3001';
-const AUDIO_TIMESLICE_MS = 1000; // Enviar áudio a cada 1 segundo
+const AUDIO_TIMESLICE_MS = 1000;
 
 type StreamingState = "idle" | "connecting" | "streaming" | "error" | "stopping";
 
 export default function LinguaVoxPage() {
   const [sourceLanguage, setSourceLanguage] = useState<string>("en");
-  const [targetLanguage, setTargetLanguage] = useState<string>("es");
+  // targetLanguage state is removed as we are focusing on transcription
   const [streamingState, setStreamingState] = useState<StreamingState>("idle");
-  const [translatedText, setTranslatedText] = useState<string>("");
+  const [transcribedText, setTranscribedText] = useState<string>(""); // Renamed from translatedText
   const [error, setError] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -57,7 +57,7 @@ export default function LinguaVoxPage() {
 
     setStreamingState("connecting");
     setError(null);
-    setTranslatedText("");
+    setTranscribedText(""); // Clear transcribed text on new connection
 
     console.log(`[Client] Tentando conectar ao WebSocket em: ${WEBSOCKET_URL}`);
     const ws = new WebSocket(WEBSOCKET_URL);
@@ -71,20 +71,18 @@ export default function LinguaVoxPage() {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data as string);
-        if (message.translatedText) {
-          setTranslatedText((prev) => prev + (prev ? " " : "") + message.translatedText);
+        if (message.transcribedText) { // Expecting transcribedText now
+          setTranscribedText((prev) => prev + (prev ? " " : "") + message.transcribedText);
         } else if (message.error) {
           console.error("[Client] WebSocket error message from server:", message.error);
           setError(`Erro do servidor: ${message.error}`);
            toast({
-            title: "Erro de Tradução",
+            title: "Erro de Transcrição",
             description: message.error,
             variant: "destructive",
           });
         } else if (message.message) {
           console.log("[Client] Mensagem informativa do servidor:", message.message);
-          // Não mostra toast para mensagens informativas genéricas, apenas para erros ou traduções.
-          // toast({ title: "Info", description: message.message });
         }
       } catch (e) {
         console.error("[Client] Failed to parse WebSocket message:", e, "Data received:", event.data);
@@ -93,7 +91,7 @@ export default function LinguaVoxPage() {
 
     ws.onerror = (event) => {
       console.error("[Client] WebSocket error (client-side). Event details:", event);
-      setError("Falha na conexão com o servidor de tradução. Verifique se o servidor WebSocket está rodando e acessível.");
+      setError("Falha na conexão com o servidor de transcrição. Verifique se o servidor WebSocket está rodando e acessível.");
       setStreamingState("error");
       toast({
         title: "Erro de WebSocket",
@@ -106,7 +104,7 @@ export default function LinguaVoxPage() {
       console.log(`[Client] WebSocket disconnected (client-side). Code: ${event.code}, Reason: "${event.reason}", WasClean: ${event.wasClean}. Event details:`, event);
       if (streamingState !== "idle" && streamingState !== "stopping") {
         if (!error || event.code !== 1006) { 
-            setError(error || `Desconectado do servidor de tradução. Código: ${event.code}`);
+            setError(error || `Desconectado do servidor de transcrição. Código: ${event.code}`);
         }
         setStreamingState("error");
       }
@@ -119,7 +117,8 @@ export default function LinguaVoxPage() {
         streamRef.current = null;
       }
     };
-  }, [sourceLanguage, targetLanguage, streamingState, toast, error]);
+  // targetLanguage removed from dependencies
+  }, [sourceLanguage, streamingState, toast, error]);
 
   const startStreamingAudio = async () => {
     if (!isMicrophoneSupported()){
@@ -139,13 +138,13 @@ export default function LinguaVoxPage() {
       streamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
       console.log("[Client] Acesso ao microfone concedido.");
       setStreamingState("streaming");
-      toast({ title: "Microfone Ativado", description: "Iniciando transmissão de áudio."});
+      toast({ title: "Microfone Ativado", description: "Iniciando transmissão de áudio para transcrição."});
 
       const MimeTypesToTry = [
-        'audio/ogg;codecs=opus', // Prioridade 1
-        'audio/webm;codecs=opus', // Prioridade 2
-        'audio/ogg', // Fallback genérico OGG
-        'audio/webm', // Fallback genérico WebM
+        'audio/ogg;codecs=opus',
+        'audio/webm;codecs=opus', 
+        'audio/ogg', 
+        'audio/webm', 
       ];
       let selectedMimeType: string | undefined = undefined;
       let mediaRecorderOptions: MediaRecorderOptions | undefined = undefined;
@@ -188,7 +187,7 @@ export default function LinguaVoxPage() {
               wsRef.current.send(JSON.stringify({
                 audioDataUri,
                 sourceLanguage,
-                targetLanguage,
+                targetLanguage: "xx", // Placeholder, as targetLanguage is not used by the flow now
               }));
             }
           };
@@ -279,52 +278,12 @@ export default function LinguaVoxPage() {
     };
   }, [stopStreamingAudio]);
 
-  const playTranslatedText = useCallback(() => {
-    if (typeof window !== 'undefined' && translatedText && window.speechSynthesis) {
-      window.speechSynthesis.cancel(); 
-      const utterance = new SpeechSynthesisUtterance(translatedText);
-      const voices = window.speechSynthesis.getVoices();
-      
-      // Esperar as vozes carregarem, se necessário
-      const loadVoices = () => {
-        const loadedVoices = window.speechSynthesis.getVoices();
-        if (loadedVoices.length > 0) {
-            const targetVoice = loadedVoices.find(voice => voice.lang.startsWith(targetLanguage));
-            if (targetVoice) {
-              utterance.voice = targetVoice;
-            } else {
-              utterance.lang = targetLanguage; // Fallback para o idioma se a voz específica não for encontrada
-            }
-            window.speechSynthesis.speak(utterance);
-        } else {
-           toast({
-            title: "TTS",
-            description: "Aguardando vozes do sistema.",
-            variant: "default",
-          });
-        }
-      };
-
-      if (voices.length === 0 && 'onvoiceschanged' in window.speechSynthesis) {
-        window.speechSynthesis.onvoiceschanged = loadVoices;
-      } else {
-        loadVoices();
-      }
-
-    } else if (translatedText) { 
-      toast({
-        title: "TTS Não Suportado",
-        description: "Seu navegador não suporta text-to-speech ou não há texto para reproduzir.",
-        variant: "default",
-      });
-    }
-  }, [translatedText, targetLanguage, toast]);
-
+  // playTranslatedText is removed as we are not translating now
 
   const StreamButtonIcon = (streamingState === "streaming" || streamingState === "connecting") ? MicOff : Mic;
-  let streamButtonText = "Iniciar Transmissão";
+  let streamButtonText = "Iniciar Transcrição"; // Changed from "Iniciar Transmissão"
   if (streamingState === "connecting") streamButtonText = "Conectando...";
-  if (streamingState === "streaming") streamButtonText = "Parar Transmissão";
+  if (streamingState === "streaming") streamButtonText = "Parar Transcrição"; // Changed
   if (streamingState === "stopping") streamButtonText = "Parando...";
   
   const isButtonDisabled = streamingState === "connecting" || streamingState === "stopping" || (streamingState === "error" && !isMicrophoneSupported());
@@ -337,7 +296,7 @@ export default function LinguaVoxPage() {
           <LinguaVoxLogo className="h-12 w-auto" />
         </div>
         <p className="text-muted-foreground text-lg">
-          Tradução de Áudio em Tempo Real via WebSocket
+          Transcrição de Áudio em Tempo Real via WebSocket
         </p>
       </header>
 
@@ -345,20 +304,20 @@ export default function LinguaVoxPage() {
         <Card className="shadow-xl">
           <CardHeader>
             <CardTitle className="text-2xl flex items-center gap-2">
-              <Languages className="text-primary" />
-              Tradutor Contínuo
+              <Edit3 className="text-primary" /> {/* Changed icon to Edit3 for transcription */}
+              Transcritor Contínuo
             </CardTitle>
             <CardDescription>
-              Selecione os idiomas e inicie a transmissão para tradução em tempo real.
+              Selecione o idioma de origem e inicie para transcrição em tempo real.
               <br/>
               <span className="text-xs text-muted-foreground">Nota: Um servidor WebSocket em {WEBSOCKET_URL.replace(/^wss?:\/\//, '')} precisa estar em execução.</span>
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-1 gap-6"> {/* Changed to 1 column */}
               <LanguageSelector
                 id="source-language"
-                label="Idioma de Origem"
+                label="Idioma de Origem do Áudio"
                 value={sourceLanguage}
                 onValueChange={(value) => {
                   if (streamingState !== "streaming" && streamingState !== "connecting") {
@@ -368,18 +327,7 @@ export default function LinguaVoxPage() {
                 languages={supportedLanguages}
                 disabled={streamingState === "streaming" || streamingState === "connecting"}
               />
-              <LanguageSelector
-                id="target-language"
-                label="Idioma de Destino"
-                value={targetLanguage}
-                onValueChange={(value) => {
-                  if (streamingState !== "streaming" && streamingState !== "connecting") {
-                    setTargetLanguage(value);
-                  }
-                }}
-                languages={supportedLanguages}
-                disabled={streamingState === "streaming" || streamingState === "connecting"}
-              />
+              {/* TargetLanguageSelector removed */}
             </div>
 
             <Separator />
@@ -399,7 +347,7 @@ export default function LinguaVoxPage() {
                 {streamButtonText}
               </Button>
               {(streamingState === "streaming") && (
-                 <p className="text-sm text-primary animate-pulse">Transmitindo áudio...</p>
+                 <p className="text-sm text-primary animate-pulse">Transmitindo áudio para transcrição...</p>
               )}
             </div>
 
@@ -410,21 +358,18 @@ export default function LinguaVoxPage() {
               </div>
             )}
             
-            {translatedText && (
+            {transcribedText && ( // Changed from translatedText
               <div className="mt-6 space-y-3">
                 <div className="flex justify-between items-center">
-                  <h3 className="text-xl font-semibold font-headline">Tradução:</h3>
-                  <Button variant="ghost" size="icon" onClick={playTranslatedText} title="Ouvir tradução" disabled={!translatedText.trim()}>
-                    <Volume2 className="h-5 w-5 text-primary"/>
-                    <span className="sr-only">Ouvir áudio</span>
-                  </Button>
+                  <h3 className="text-xl font-semibold font-headline">Transcrição:</h3>
+                  {/* Play button removed */}
                 </div>
                 <Textarea
-                  value={translatedText}
+                  value={transcribedText} // Changed from translatedText
                   readOnly
                   rows={8}
                   className="bg-muted/50 border-border text-lg p-4 rounded-md shadow-inner"
-                  aria-label="Texto traduzido"
+                  aria-label="Texto transcrito" // Changed
                 />
               </div>
             )}
@@ -433,11 +378,8 @@ export default function LinguaVoxPage() {
       </main>
       <footer className="w-full max-w-3xl mt-12 text-center text-sm text-muted-foreground">
         <p>&copy; {new Date().getFullYear()} LinguaVox. Todos os direitos reservados.</p>
-        <p className="mt-1">Projetado para tradução de áudio local e contínua.</p>
+        <p className="mt-1">Projetado para transcrição de áudio local e contínua.</p>
       </footer>
     </div>
   );
 }
-    
-
-    
