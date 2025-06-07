@@ -15,10 +15,11 @@ import { Separator } from "@/components/ui/separator";
 type StreamingState = "idle" | "recognizing" | "error" | "stopping";
 
 let recognition: SpeechRecognition | null = null;
-let ws = useRef<WebSocket | null>(null);
+// let ws = useRef<WebSocket | null>(null); // MOVED INSIDE COMPONENT
 
 export default function LinguaVoxPage() {
-  const [sourceLanguage, setSourceLanguage] = useState<string>("pt"); // Use 2-letter codes for consistency
+  const ws = useRef<WebSocket | null>(null); // MOVED HERE
+  const [sourceLanguage, setSourceLanguage] = useState<string>("pt");
   const [targetLanguage, setTargetLanguage] = useState<string>("en");
   const [streamingState, setStreamingState] = useState<StreamingState>("idle");
   const [transcribedText, setTranscribedText] = useState<string>("");
@@ -30,14 +31,7 @@ export default function LinguaVoxPage() {
   const { toast } = useToast();
 
   const getWebSocketUrl = () => {
-    // For client-side WebSocket connection, use the current window's hostname
-    // Assume WebSocket server runs on port 3001 by default
-    // For local development, this will typically be 'ws://localhost:3001'
-    // In a deployed environment, it might be 'wss://your-app-domain.com' if proxied,
-    // or a specific WebSocket endpoint.
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    // Default to port 3001 for ws, and standard 80/443 for wss if not specified
-    // For this example, we'll stick to 3001 for simplicity, adjust if your deployment is different
     const wsPort = process.env.NEXT_PUBLIC_WEBSOCKET_PORT || '3001';
     return `${protocol}//${window.location.hostname}:${wsPort}`;
   };
@@ -55,7 +49,7 @@ export default function LinguaVoxPage() {
 
     ws.current.onopen = () => {
       console.log("[Client] WebSocket conectado (client-side)");
-      setError(null); // Clear previous errors on new connection
+      setError(null);
     };
 
     ws.current.onmessage = (event) => {
@@ -84,28 +78,26 @@ export default function LinguaVoxPage() {
     ws.current.onerror = (event) => {
       console.error("[Client] Erro no WebSocket (client-side):", event);
       setError("Falha na conexão WebSocket. Verifique o console.");
-      setStreamingState("error"); // Can also set to idle if preferred
+      setStreamingState("error");
       setIsTranslating(false);
       toast({ title: "Erro de Conexão", description: "Não foi possível conectar ao servidor WebSocket.", variant: "destructive" });
     };
 
     ws.current.onclose = (event) => {
       console.log(`[Client] WebSocket desconectado (client-side). Código: ${event.code}, Razão: "${event.reason}", Foi Limpo: ${event.wasClean}. Detalhes do evento:`, event);
-      // Optionally, you can try to reconnect here or set state to allow manual reconnection
-      // For now, just log and set state to idle if it was recognizing or stopping
       if (streamingState === "recognizing" || streamingState === "stopping") {
         setStreamingState("idle");
       }
-       if (ws.current && ws.current === event.target) { // Check if it's the current WebSocket instance
-        ws.current = null; // Clear the ref if this instance is closed
+       if (ws.current && ws.current === event.target) {
+        ws.current = null;
       }
     };
-  }, [streamingState, toast]); // Added toast
+  }, [streamingState, toast]);
 
   useEffect(() => {
-    connectWebSocket(); // Connect on component mount
+    connectWebSocket();
 
-    return () => { // Cleanup on component unmount
+    return () => {
       if (ws.current && ws.current.readyState === WebSocket.OPEN) {
         console.log("[Client] Fechando WebSocket ao desmontar o componente...");
         ws.current.close(1000, "Component unmounting");
@@ -113,7 +105,7 @@ export default function LinguaVoxPage() {
       ws.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Connect only once on mount
+  }, []);
 
   const isSpeechRecognitionSupported = useCallback(() => {
     return typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
@@ -149,7 +141,7 @@ export default function LinguaVoxPage() {
     setError(null);
     setTranscribedText("");
     setInterimTranscribedText("");
-    setTranslatedText(""); // Clear previous translation
+    setTranslatedText("");
     toast({ title: "Microfone Ativado", description: "Iniciando reconhecimento de fala..." });
 
     const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -172,14 +164,13 @@ export default function LinguaVoxPage() {
     
     recognition.continuous = true;
     recognition.interimResults = true;
-    // Map 2-letter codes to BCP 47 language tags for Web Speech API
     const speechLang = sourceLanguage === "en" ? "en-US" :
                        sourceLanguage === "es" ? "es-ES" :
                        sourceLanguage === "fr" ? "fr-FR" :
                        sourceLanguage === "de" ? "de-DE" :
                        sourceLanguage === "it" ? "it-IT" :
                        sourceLanguage === "pt" ? "pt-BR" :
-                       sourceLanguage; // Fallback for other codes, might need adjustment
+                       sourceLanguage;
     recognition.lang = speechLang;
     console.log(`[Client] Instância SpeechRecognition criada. Idioma: ${recognition.lang}`);
 
@@ -210,14 +201,13 @@ export default function LinguaVoxPage() {
            ws.current.send(JSON.stringify({
              action: "translate",
              text: newFinalText,
-             sourceLanguage: sourceLanguage, // Send 2-letter code
-             targetLanguage: targetLanguage  // Send 2-letter code
+             sourceLanguage: sourceLanguage,
+             targetLanguage: targetLanguage
            }));
          } else {
            console.warn("[Client] WebSocket não está aberto. Não é possível enviar texto para tradução.");
            setError("Conexão WebSocket perdida. Não é possível traduzir.");
            setIsTranslating(false);
-           // Reconnect if ws.current is null
            if (!ws.current) {
              console.log("[Client] Tentando reconectar WebSocket...");
              connectWebSocket();
@@ -230,7 +220,6 @@ export default function LinguaVoxPage() {
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       console.error("[Client] Erro no SpeechRecognition:", event);
       let errMessage = `Erro no reconhecimento: ${event.error}`;
-      // ... (error messages as before)
       if (event.error === 'network') errMessage = "Erro de rede durante o reconhecimento.";
       else if (event.error === 'no-speech') errMessage = "Nenhuma fala detectada.";
       else if (event.error === 'audio-capture') errMessage = "Falha na captura de áudio. Verifique permissões.";
@@ -291,9 +280,7 @@ export default function LinguaVoxPage() {
     } else if (streamingState === "idle" || streamingState === "error") {
        if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
         console.log("[Client] WebSocket não está conectado. Tentando reconectar antes de iniciar o reconhecimento...");
-        connectWebSocket(); // Try to reconnect
-        // Optionally, wait for connection before starting recognition, or let startRecognition handle it.
-        // For simplicity, we'll proceed and let startRecognition or onresult handle WebSocket state.
+        connectWebSocket();
       }
       startRecognition();
     }
@@ -317,10 +304,8 @@ export default function LinguaVoxPage() {
   const isButtonDisabled = streamingState === "stopping";
   const isLoading = streamingState === "stopping" || isTranslating;
 
-  // Use 2-letter codes for LanguageSelector values
   const languageSelectorItems = supportedLanguages.map(lang => ({
     ...lang,
-    // code remains as 2-letter for selection, mapping happens in startRecognition for WebSpeech API
   }));
 
 
@@ -447,5 +432,7 @@ export default function LinguaVoxPage() {
     </div>
   );
 }
+
+    
 
     
