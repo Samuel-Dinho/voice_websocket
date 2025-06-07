@@ -12,6 +12,9 @@ const wss = new WebSocketServer({ port: PORT });
 
 console.log(`[WebSocketServer] Iniciado em ws://localhost:${PORT}`);
 
+// Store clients who want to listen to audio
+const audioSubscribers = new Set<WebSocket>();
+
 wss.on('connection', (ws: WebSocket) => {
   console.log('[WebSocketServer] Cliente conectado');
 
@@ -20,7 +23,7 @@ wss.on('connection', (ws: WebSocket) => {
     try {
       const dataString = message.toString();
       parsedData = JSON.parse(dataString);
-      console.log('[WebSocketServer] Mensagem recebida do cliente:', parsedData);
+      console.log('[WebSocketServer] Mensagem recebida do cliente:', parsedData.action);
     } catch (e) {
       console.warn(`[WebSocketServer] Falha ao parsear JSON: "${message.toString().substring(0,100)}..."`, e);
       if (ws.readyState === WebSocket.OPEN) {
@@ -29,19 +32,41 @@ wss.on('connection', (ws: WebSocket) => {
       return;
     }
 
-    if (parsedData.action === 'translate' && parsedData.text && parsedData.sourceLanguage && parsedData.targetLanguage) {
-      console.log(`[WebSocketServer] Requisição de tradução recebida. Texto: "${parsedData.text}", De: ${parsedData.sourceLanguage}, Para: ${parsedData.targetLanguage}`);
+    if (parsedData.action === 'subscribe_audio') {
+      audioSubscribers.add(ws);
+      console.log('[WebSocketServer] Novo assinante de áudio adicionado. Total:', audioSubscribers.size);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ message: 'Inscrito para receber chunks de áudio.' }));
+      }
+    } else if (parsedData.action === 'process_speech' && parsedData.transcribedText && parsedData.sourceLanguage && parsedData.targetLanguage && parsedData.audioDataUri) {
+      console.log(`[WebSocketServer] Requisição de process_speech recebida. Texto: "${parsedData.transcribedText.substring(0,30)}..."`);
+      
+      // 1. Retransmit audio to subscribers
+      if (parsedData.audioDataUri) {
+        console.log(`[WebSocketServer] Retransmitindo audioDataUri para ${audioSubscribers.size} assinantes.`);
+        audioSubscribers.forEach(subscriber => {
+          if (subscriber.readyState === WebSocket.OPEN) {
+            try {
+              subscriber.send(JSON.stringify({ type: 'audio_chunk', audioDataUri: parsedData.audioDataUri }));
+            } catch (sendError) {
+              console.error('[WebSocketServer] Erro ao enviar audio_chunk para assinante:', sendError);
+            }
+          }
+        });
+      }
+
+      // 2. Process translation
       try {
         const translationInput: ImproveTranslationAccuracyInput = {
-          text: parsedData.text,
+          text: parsedData.transcribedText,
           sourceLanguage: parsedData.sourceLanguage,
           targetLanguage: parsedData.targetLanguage,
         };
         const translationOutput = await improveTranslationAccuracy(translationInput);
         
-        if (ws.readyState === WebSocket.OPEN) {
+        if (ws.readyState === WebSocket.OPEN) { // Send translation back to original sender
           ws.send(JSON.stringify({ translatedText: translationOutput.translatedText }));
-          console.log(`[WebSocketServer] Tradução enviada para o cliente: "${translationOutput.translatedText}"`);
+          console.log(`[WebSocketServer] Tradução enviada para o cliente original: "${translationOutput.translatedText.substring(0,30)}..."`);
         }
       } catch (error: any) {
         console.error('[WebSocketServer] Erro ao chamar o fluxo de tradução:', error.message || error);
@@ -51,19 +76,26 @@ wss.on('connection', (ws: WebSocket) => {
         } else if(error.message){
             errorMessage = `Erro na API GenAI: ${error.message}`;
         }
-
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ error: errorMessage }));
         }
       }
     } else {
-      console.log('[WebSocketServer] Mensagem recebida não é uma ação de tradução válida:', parsedData);
+      console.log('[WebSocketServer] Mensagem recebida não é uma ação válida ou faltam dados:', parsedData.action);
+      // Optional: send an error back to the client if the action is unrecognized
+      // if (ws.readyState === WebSocket.OPEN) {
+      //   ws.send(JSON.stringify({ error: `Ação desconhecida ou dados ausentes: ${parsedData.action}` }));
+      // }
     }
   });
 
   ws.on('close', (code, reason) => {
     const reasonText = reason ? reason.toString('utf8') : 'Nenhuma razão especificada';
     console.log(`[WebSocketServer] Cliente desconectado. Código: ${code}, Razão: "${reasonText}"`);
+    if (audioSubscribers.has(ws)) {
+      audioSubscribers.delete(ws);
+      console.log('[WebSocketServer] Assinante de áudio removido. Total:', audioSubscribers.size);
+    }
   });
 
   ws.on('error', (error: Error) => {
@@ -72,8 +104,8 @@ wss.on('connection', (ws: WebSocket) => {
 
   try {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ message: 'Conectado com sucesso ao servidor WebSocket LinguaVox para tradução.' }));
-      console.log('[WebSocketServer] Mensagem de boas-vindas (tradução) enviada ao cliente.');
+      ws.send(JSON.stringify({ message: 'Conectado com sucesso ao servidor WebSocket LinguaVox.' }));
+      console.log('[WebSocketServer] Mensagem de boas-vindas enviada ao cliente.');
     }
   } catch (sendError) {
     console.error('[WebSocketServer] Erro ao enviar mensagem de boas-vindas:', sendError);
