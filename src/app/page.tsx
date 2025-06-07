@@ -83,7 +83,8 @@ export default function LinguaVoxPage() {
           });
         } else if (message.message) {
           console.log("[Client] Mensagem informativa do servidor:", message.message);
-          toast({ title: "Info", description: message.message });
+          // Não mostra toast para mensagens informativas genéricas, apenas para erros ou traduções.
+          // toast({ title: "Info", description: message.message });
         }
       } catch (e) {
         console.error("[Client] Failed to parse WebSocket message:", e, "Data received:", event.data);
@@ -141,9 +142,10 @@ export default function LinguaVoxPage() {
       toast({ title: "Microfone Ativado", description: "Iniciando transmissão de áudio."});
 
       const MimeTypesToTry = [
-        'audio/webm;codecs=opus',
-        'audio/ogg;codecs=opus',
-        'audio/webm', // Fallback mais genérico
+        'audio/ogg;codecs=opus', // Prioridade 1
+        'audio/webm;codecs=opus', // Prioridade 2
+        'audio/ogg', // Fallback genérico OGG
+        'audio/webm', // Fallback genérico WebM
       ];
       let selectedMimeType: string | undefined = undefined;
       let mediaRecorderOptions: MediaRecorderOptions | undefined = undefined;
@@ -152,7 +154,10 @@ export default function LinguaVoxPage() {
         if (MediaRecorder.isTypeSupported(mimeType)) {
           selectedMimeType = mimeType;
           mediaRecorderOptions = { mimeType: selectedMimeType };
+          console.log(`[Client] MIME type ${mimeType} é suportado.`);
           break;
+        } else {
+          console.log(`[Client] MIME type ${mimeType} NÃO é suportado.`);
         }
       }
 
@@ -171,7 +176,7 @@ export default function LinguaVoxPage() {
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
           audioChunksRef.current.push(event.data);
-          const blobMimeType = mediaRecorderRef.current!.mimeType; // Usar o mimeType com o qual o MediaRecorder foi realmente inicializado
+          const blobMimeType = mediaRecorderRef.current!.mimeType; 
           const audioBlob = new Blob(audioChunksRef.current, { type: blobMimeType });
           audioChunksRef.current = [];
 
@@ -279,17 +284,37 @@ export default function LinguaVoxPage() {
       window.speechSynthesis.cancel(); 
       const utterance = new SpeechSynthesisUtterance(translatedText);
       const voices = window.speechSynthesis.getVoices();
-      const targetVoice = voices.find(voice => voice.lang.startsWith(targetLanguage));
-      if (targetVoice) {
-        utterance.voice = targetVoice;
+      
+      // Esperar as vozes carregarem, se necessário
+      const loadVoices = () => {
+        const loadedVoices = window.speechSynthesis.getVoices();
+        if (loadedVoices.length > 0) {
+            const targetVoice = loadedVoices.find(voice => voice.lang.startsWith(targetLanguage));
+            if (targetVoice) {
+              utterance.voice = targetVoice;
+            } else {
+              utterance.lang = targetLanguage; // Fallback para o idioma se a voz específica não for encontrada
+            }
+            window.speechSynthesis.speak(utterance);
+        } else {
+           toast({
+            title: "TTS",
+            description: "Aguardando vozes do sistema.",
+            variant: "default",
+          });
+        }
+      };
+
+      if (voices.length === 0 && 'onvoiceschanged' in window.speechSynthesis) {
+        window.speechSynthesis.onvoiceschanged = loadVoices;
       } else {
-        utterance.lang = targetLanguage; 
+        loadVoices();
       }
-      window.speechSynthesis.speak(utterance);
+
     } else if (translatedText) { 
       toast({
         title: "TTS Não Suportado",
-        description: "Seu navegador não suporta text-to-speech.",
+        description: "Seu navegador não suporta text-to-speech ou não há texto para reproduzir.",
         variant: "default",
       });
     }
