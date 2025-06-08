@@ -65,3 +65,6 @@ const improveTranslationAccuracyFlow = ai.defineFlow(
     return output!;
   }
 );
+
+// Export ai and z for use in other flows if necessary
+export {ai as genkitAI, z as zod};

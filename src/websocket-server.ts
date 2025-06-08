@@ -3,6 +3,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { config as dotenvConfig } from 'dotenv';
 import { improveTranslationAccuracy, type ImproveTranslationAccuracyInput } from './ai/flows/improve-translation-accuracy';
+import { transcribeAudio, type TranscribeAudioInput } from './ai/flows/transcribe-audio-flow'; // Import the new flow
 
 dotenvConfig(); 
 
@@ -22,7 +23,7 @@ wss.on('connection', (ws: WebSocket) => {
     try {
       const dataString = message.toString();
       parsedData = JSON.parse(dataString);
-      console.log('[WebSocketServer] Mensagem recebida do cliente:', parsedData.action);
+      console.log('[WebSocketServer] Mensagem recebida do cliente:', parsedData.action, 'Modo Áudio:', parsedData.audioSourceMode);
     } catch (e) {
       console.warn(`[WebSocketServer] Falha ao parsear JSON: "${message.toString().substring(0,100)}..."`, e);
       if (ws.readyState === WebSocket.OPEN) {
@@ -37,25 +38,53 @@ wss.on('connection', (ws: WebSocket) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ message: 'Inscrito para receber áudio traduzido.' }));
       }
-    } else if (parsedData.action === 'process_speech' && parsedData.transcribedText && parsedData.sourceLanguage && parsedData.targetLanguage && parsedData.audioDataUri) {
-      console.log(`[WebSocketServer] Requisição de process_speech recebida. Texto: "${parsedData.transcribedText.substring(0,30)}..."`);
+    } else if (parsedData.action === 'process_speech' && parsedData.sourceLanguage && parsedData.targetLanguage) {
+      // Required fields: transcribedText (can be placeholder for system audio), sourceLanguage, targetLanguage, audioDataUri (can be null for mic only text)
+      // audioSourceMode is also expected
+
+      let textToTranslate = parsedData.transcribedText;
+
+      console.log(`[WebSocketServer] Requisição de process_speech recebida. Texto original (ou placeholder): "${textToTranslate ? textToTranslate.substring(0,30) : 'N/A'}..."`);
       
-      // Process translation
       try {
+        if (parsedData.audioSourceMode === "system" && parsedData.audioDataUri) {
+          console.log('[WebSocketServer] Modo Sistema: Tentando transcrever áudio da tela/aba.');
+          const transcriptionInput: TranscribeAudioInput = {
+            audioDataUri: parsedData.audioDataUri,
+            languageCode: parsedData.sourceLanguage, // Pass source language as a hint
+          };
+          const transcriptionOutput = await transcribeAudio(transcriptionInput);
+          textToTranslate = transcriptionOutput.transcribedText;
+          console.log(`[WebSocketServer] Texto transcrito (do áudio da tela/aba): "${textToTranslate ? textToTranslate.substring(0,30) : 'Falha na transcrição'}"`);
+        } else if (!textToTranslate && parsedData.audioSourceMode === "microphone") {
+           console.warn('[WebSocketServer] Modo Microfone, mas texto transcrito está vazio. Não prosseguindo com tradução.');
+           if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ error: 'Texto transcrito do microfone estava vazio.' }));
+           }
+           return;
+        }
+
+
+        if (!textToTranslate || textToTranslate.trim() === "") {
+            console.warn('[WebSocketServer] Texto para tradução está vazio ou nulo após tentativa de transcrição (se aplicável). Não prosseguindo.');
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ error: 'Nenhum texto para traduzir após processamento inicial.' }));
+            }
+            return;
+        }
+
         const translationInput: ImproveTranslationAccuracyInput = {
-          text: parsedData.transcribedText,
+          text: textToTranslate,
           sourceLanguage: parsedData.sourceLanguage,
           targetLanguage: parsedData.targetLanguage,
         };
         const translationOutput = await improveTranslationAccuracy(translationInput);
         
-        // Send translation back to original sender
         if (ws.readyState === WebSocket.OPEN) { 
           ws.send(JSON.stringify({ translatedText: translationOutput.translatedText }));
           console.log(`[WebSocketServer] Tradução enviada para o cliente original: "${translationOutput.translatedText.substring(0,30)}..."`);
         }
 
-        // Send translated text to audio subscribers for speech synthesis
         if (translationOutput.translatedText) {
           console.log(`[WebSocketServer] Enviando texto traduzido "${translationOutput.translatedText.substring(0,30)}..." para ${audioSubscribers.size} ouvintes.`);
           audioSubscribers.forEach(subscriber => {
@@ -74,8 +103,8 @@ wss.on('connection', (ws: WebSocket) => {
         }
 
       } catch (error: any) {
-        console.error('[WebSocketServer] Erro ao chamar o fluxo de tradução:', error.message || error);
-        let errorMessage = 'Erro interno do servidor ao traduzir.';
+        console.error('[WebSocketServer] Erro durante o processamento de STT ou Tradução:', error.message || error, error.cause || error.stack);
+        let errorMessage = 'Erro interno do servidor ao processar o áudio/texto.';
         if (error.cause && typeof error.cause === 'object' && 'message' in error.cause) {
             errorMessage = `Erro na API GenAI: ${(error.cause as Error).message}`;
         } else if(error.message){
@@ -87,6 +116,9 @@ wss.on('connection', (ws: WebSocket) => {
       }
     } else {
       console.log('[WebSocketServer] Mensagem recebida não é uma ação válida ou faltam dados:', parsedData.action);
+       if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ error: `Ação '${parsedData.action}' não reconhecida ou dados insuficientes.` }));
+        }
     }
   });
 
