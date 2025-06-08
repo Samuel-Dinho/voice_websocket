@@ -4,7 +4,7 @@
 import { LinguaVoxLogo } from "@/components/icons/LinguaVoxLogo";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Volume2, WifiOff, Loader2, Mic, PlayCircle } from "lucide-react";
+import { Volume2, WifiOff, Loader2, Mic, PlayCircle, AudioLines } from "lucide-react"; // Adicionado AudioLines
 import Link from "next/link";
 import { useEffect, useRef, useState, useCallback } from "react";
 
@@ -15,12 +15,11 @@ export default function ListenerPage() {
   const [listenerState, setListenerState] = useState<ListenerState>("connecting");
   const [lastMessage, setLastMessage] = useState<string | null>(null);
   const utteranceQueueRef = useRef<SpeechSynthesisUtterance[]>([]);
-  const [isSpeaking, setIsSpeaking] = useState(false); // Nosso estado interno
+  const [isSpeaking, setIsSpeaking] = useState(false); 
   const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [audioActivated, setAudioActivated] = useState(false);
   const voiceLoadFallbackIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Usamos uma ref para a função para que o closure sempre pegue a versão mais recente.
   const speakNextInQueueRef = useRef<() => void>(() => {});
 
 
@@ -93,7 +92,7 @@ export default function ListenerPage() {
 
     if (window.speechSynthesis.speaking) {
         console.log("[Listener] SpeechSynthesis já está falando. Não iniciando nova utterance.");
-        if (!isSpeaking) setIsSpeaking(true); // Sincroniza nosso estado
+        if (!isSpeaking) setIsSpeaking(true); 
         return;
     }
 
@@ -103,12 +102,10 @@ export default function ListenerPage() {
         return;
     }
     
-    // Se chegamos aqui: áudio está ativado, TTS não está falando, e a fila tem itens.
-    
     const utterance = utteranceQueueRef.current.shift();
 
     if (utterance) {
-      setIsSpeaking(true); // Definimos nosso estado para indicar que estamos iniciando a fala.
+      setIsSpeaking(true); 
       const targetLangLC = utterance.lang.toLowerCase();
       const targetLangPrefixLC = targetLangLC.split('-')[0];
 
@@ -142,17 +139,16 @@ export default function ListenerPage() {
       utterance.onstart = () => {
         console.log(`[Listener] Evento onstart: Síntese de fala iniciada para: "${utterance.text.substring(0,30)}..."`);
         setLastMessage(`Falando: "${utterance.text.substring(0,20)}..."`);
-        // setIsSpeaking(true); // Já definido antes de chamar speak()
       };
       utterance.onend = () => {
         console.log(`[Listener] Evento onend: Síntese de fala finalizada para: "${utterance.text.substring(0,30)}..."`);
-        setIsSpeaking(false); // Importante: resetar o estado aqui
+        setIsSpeaking(false); 
         speakNextInQueueRef.current();
       };
       utterance.onerror = (event) => {
         console.error(`[Listener] Evento onerror: Erro na síntese de fala: ${event.error}. Texto: "${utterance.text.substring(0,30)}..." Detalhes:`, event);
         setLastMessage(`Erro ao falar: ${event.error}`);
-        setIsSpeaking(false); // Importante: resetar o estado aqui
+        setIsSpeaking(false); 
         speakNextInQueueRef.current();
       };
 
@@ -161,7 +157,7 @@ export default function ListenerPage() {
         window.speechSynthesis.speak(utterance);
       } catch (e) {
         console.error("[Listener] Erro direto ao chamar window.speechSynthesis.speak():", e);
-        setIsSpeaking(false); // Erro síncrono, resetamos nosso estado
+        setIsSpeaking(false); 
         speakNextInQueueRef.current();
       }
 
@@ -198,12 +194,12 @@ export default function ListenerPage() {
         unlockUtterance.onstart = () => console.log("[Listener] Unlock utterance onstart.");
         unlockUtterance.onend = () => {
             console.log("[Listener] Unlock utterance onend.");
-            setIsSpeaking(false); // Garante que o estado esteja resetado
+            setIsSpeaking(false); 
             speakNextInQueueRef.current();
         };
         unlockUtterance.onerror = (event) => {
             console.error("[Listener] Unlock utterance onerror:", event.error, "Evento:", event);
-            setIsSpeaking(false); // Garante que o estado esteja resetado
+            setIsSpeaking(false); 
             speakNextInQueueRef.current();
         };
         window.speechSynthesis.speak(unlockUtterance);
@@ -369,7 +365,7 @@ export default function ListenerPage() {
         </p>
         <div className="text-center mt-2">
             <Link href="/" className="text-sm text-primary hover:underline flex items-center justify-center gap-1">
-                <Mic size={16} />
+                <Mic size={16} /> {/* Mantido Mic, mas poderia ser AudioLines para consistência */}
                 Ir para a Página de Transcrição
             </Link>
         </div>
@@ -379,7 +375,7 @@ export default function ListenerPage() {
         <Card className="shadow-xl">
           <CardHeader>
             <CardTitle className="text-2xl flex items-center gap-2">
-              <Volume2 className="text-primary" />
+              <AudioLines className="text-primary" /> {/* Trocado Volume2 por AudioLines */}
               Receptor de Tradução Falada
             </CardTitle>
             <CardDescription>
@@ -447,3 +443,5 @@ export default function ListenerPage() {
     </div>
   );
 }
+
+    
