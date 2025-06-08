@@ -2,10 +2,14 @@
 'use server';
 /**
  * @fileOverview This file defines a Genkit flow for transcribing audio.
- * NOTE: This flow attempts to use Gemini 1.5 Flash for transcription.
- * If this model is not available or transcription quality is poor,
- * a dedicated STT model/service (e.g., Google Cloud Speech-to-Text integrated via Genkit)
- * will be necessary for accurate and robust transcription.
+ * NOTE: THIS IS A PLACEHOLDER. The current Gemini model (e.g., `gemini-2.0-flash`)
+ * is NOT a dedicated Speech-to-Text (STT) model.
+ * Attempting to pass audio data directly to it for transcription
+ * can lead to "Invalid Argument" errors from the API.
+ *
+ * For accurate and robust transcription, a dedicated STT model/service
+ * (e.g., Google Cloud Speech-to-Text integrated via Genkit) will be necessary.
+ * This flow currently returns a placeholder text indicating this need.
  *
  * - transcribeAudio - A function that initiates the audio transcription flow.
  * - TranscribeAudioInput - The input type for the transcribeAudio function.
@@ -19,7 +23,7 @@ const TranscribeAudioInputSchema = z.object({
   audioDataUri: z
     .string()
     .describe(
-      "The audio data to be transcribed, as a data URI. Expected format: 'data:<mimetype>;base64,<encoded_data>'."
+      "The audio data to be transcribed, as a data URI. Expected format: 'data:<mimetype>;base64,<encoded_data>'. NOTE: This URI is currently NOT directly processed by the LLM in this placeholder flow to avoid API errors."
     ),
   languageCode: z.string().optional().describe('The language of the audio. BCP-47 format (e.g., "en-US", "pt-BR"). Optional, model may auto-detect.'),
 });
@@ -27,7 +31,7 @@ const TranscribeAudioInputSchema = z.object({
 export type TranscribeAudioInput = z.infer<typeof TranscribeAudioInputSchema>;
 
 const TranscribeAudioOutputSchema = z.object({
-  transcribedText: z.string().describe('The transcribed text from the audio.'),
+  transcribedText: z.string().describe('The transcribed text from the audio. Currently a placeholder.'),
 });
 
 export type TranscribeAudioOutput = z.infer<
@@ -37,72 +41,74 @@ export type TranscribeAudioOutput = z.infer<
 export async function transcribeAudio(
   input: TranscribeAudioInput
 ): Promise<TranscribeAudioOutput> {
-  console.log('[transcribeAudioFlow] Received input for transcription. Language:', input.languageCode, 'Audio URI (first 100 chars):', input.audioDataUri.substring(0, 100));
+  // Log que o áudio foi recebido, mas não será passado diretamente ao prompt problemático.
+  console.log('[transcribeAudioFlow] Placeholder STT: Received input. Language:', input.languageCode, 'Audio URI (first 60 chars):', input.audioDataUri.substring(0, 60));
   try {
-    const result = await transcribeAudioFlow(input);
-    console.log('[transcribeAudioFlow] Transcription flow executed. Result:', result?.transcribedText?.substring(0,100) || "No text or error");
+    // Passamos apenas languageCode para o flow que chama o prompt,
+    // já que o prompt não usará o audioDataUri para evitar erros.
+    const result = await transcribeAudioFlow({ languageCode: input.languageCode });
+    console.log('[transcribeAudioFlow] Placeholder STT: Flow executed. Result:', result?.transcribedText?.substring(0,100) || "No text or error");
     return result;
   } catch (error: any) {
-    console.error('[transcribeAudioFlow] Error executing transcription flow:', error.message || error, error.cause || error.stack);
+    console.error('[transcribeAudioFlow] Placeholder STT: Error executing flow:', error.message || error, error.cause || error.stack);
     // Se houver erro na chamada do fluxo (ex: modelo não encontrado), retorne o placeholder
-    return { transcribedText: "[Erro na transcrição no servidor - verificar logs do servidor]" };
+    return { transcribedText: `[Erro na execução do fluxo de transcrição placeholder: ${error.message || 'Erro desconhecido'}]` };
   }
 }
 
-// Attempt to use a more recent Gemini model that has better multimodal capabilities.
-// If 'gemini-1.5-flash-latest' is not recognized by the Genkit GoogleAI plugin version,
-// Genkit might throw an error on startup, or this flow might fail.
-// In such a case, remove the 'model' line to default to the globally configured model.
+// O 'model' explícito foi removido para usar o padrão de genkit.ts
+// O prompt foi alterado para NÃO usar {{media url=audioDataUri}}
 const transcribeAudioPrompt = ai.definePrompt({
   name: 'transcribeAudioPrompt',
-  model: 'googleai/gemini-1.5-flash-latest', // Attempt to use Gemini 1.5 Flash
   input: {
-    schema: TranscribeAudioInputSchema,
+    schema: z.object({ // O prompt agora espera apenas languageCode
+        languageCode: z.string().optional().describe('The language of the audio.'),
+    })
   },
   output: {
     schema: TranscribeAudioOutputSchema,
   },
-  prompt: `You are a highly accurate Speech-to-Text engine.
-Your task is to transcribe the provided audio into text.
-The audio language is likely '{{{languageCode}}}', but if the audio clearly dictates another language, prioritize the actual spoken language.
-Audio to transcribe: {{media url=audioDataUri}}
-
-Return ONLY the transcribed text. Do not add any commentary, preamble, or extra formatting.
-If the audio is silent or contains no discernible speech, return an empty string for the transcribedText.`,
+  // Este prompt agora só usa languageCode e age como um placeholder.
+  prompt: `You are a helpful assistant. The user wants to transcribe audio.
+The audio language is '{{{languageCode}}}'.
+Since direct audio processing by you is not set up for STT, provide a placeholder text acknowledging the transcription request for this language and stating that a dedicated STT model is needed.
+For example, for 'en-US', respond with: "[Placeholder transcription for en-US audio. Dedicated STT model required for actual transcription.]"
+If languageCode is not provided, use a generic placeholder like: "[Placeholder transcription. Dedicated STT model required.]"
+Return ONLY the placeholder text in the 'transcribedText' field.`,
 });
 
 const transcribeAudioFlow = ai.defineFlow(
   {
     name: 'transcribeAudioFlow',
-    inputSchema: TranscribeAudioInputSchema,
+    inputSchema: z.object({ // O fluxo em si agora espera apenas languageCode
+        languageCode: z.string().optional(),
+    }),
     outputSchema: TranscribeAudioOutputSchema,
   },
-  async (input: TranscribeAudioInput) => {
-    console.log(`[transcribeAudioFlow - flow execution] Attempting transcription with model. Input language: ${input.languageCode}`);
+  async (input: { languageCode?: string }) => { // O tipo do input do fluxo reflete a mudança
+    console.log(`[transcribeAudioFlow - flow execution] Placeholder STT: Attempting for language: ${input.languageCode || 'not specified'}`);
     try {
-      const {output} = await transcribeAudioPrompt(input);
+      const {output} = await transcribeAudioPrompt({ languageCode: input.languageCode });
 
       if (!output || typeof output.transcribedText !== 'string' || output.transcribedText.trim() === "") {
-          console.warn('[transcribeAudioFlow - flow execution] Transcription output was empty or invalid from the model.');
+          console.warn('[transcribeAudioFlow - flow execution] Placeholder STT: Output was empty or invalid from the model.');
           // Mesmo se o modelo retornar vazio (ex: silêncio), vamos retornar isso em vez do placeholder de erro,
           // a menos que seja uma falha catastrófica.
-          return { transcribedText: output?.transcribedText || "" };
+          return { transcribedText: output?.transcribedText || "[Placeholder STT output was empty]" };
       }
-      console.log('[transcribeAudioFlow - flow execution] Transcription successful (first 100 chars): "', output.transcribedText.substring(0, 100),'..."');
+      console.log('[transcribeAudioFlow - flow execution] Placeholder STT: Successful: "', output.transcribedText.substring(0, 100),'..."');
       return output;
     } catch (error: any) {
-        console.error('[transcribeAudioFlow - flow execution] Error during prompt execution:', error.message || error, error.cause);
-        const errorMessage = error.cause?.message || error.message || "Unknown error during transcription prompt";
+        console.error('[transcribeAudioFlow - flow execution] Placeholder STT: Error during prompt execution:', error.message || error, error.cause);
+        const errorMessage = error.cause?.message || error.message || "Unknown error during placeholder transcription prompt";
         // Se o erro for de "invalid argument" ou similar, pode ser que o modelo não suporte o formato/conteúdo do áudio.
         if (errorMessage.toLowerCase().includes("invalid argument") || errorMessage.toLowerCase().includes("bad request")) {
-            return { transcribedText: `[Transcrição falhou: Argumento inválido para o modelo - ${errorMessage}]` };
+            return { transcribedText: `[Transcrição (placeholder) falhou: Argumento inválido para o modelo - ${errorMessage}]` };
         }
-        return { transcribedText: `[Erro interno na transcrição: ${errorMessage}]` };
+        return { transcribedText: `[Erro interno na transcrição (placeholder): ${errorMessage}]` };
     }
   }
 );
 
 // Export ai and z for use in other flows if necessary
 export {ai as genkitAI, z as zod};
-
-    
