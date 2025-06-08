@@ -1,8 +1,11 @@
+
 'use server';
 /**
  * @fileOverview This file defines a Genkit flow for transcribing audio.
- * NOTE: The current Genkit model (gemini-2.0-flash) is not primarily a Speech-to-Text model.
- * This flow is a structural placeholder; actual STT may require a different model/plugin.
+ * NOTE: The current Genkit model (gemini-2.0-flash) is NOT a dedicated Speech-to-Text (STT) model.
+ * This flow serves as a structural placeholder. For accurate and robust transcription,
+ * especially for production use, this flow MUST be updated to use a dedicated STT model/service
+ * (e.g., Google Cloud Speech-to-Text integrated via Genkit).
  *
  * - transcribeAudio - A function that initiates the audio transcription flow.
  * - TranscribeAudioInput - The input type for the transcribeAudio function.
@@ -59,15 +62,20 @@ const transcribeAudioFlow = ai.defineFlow(
     outputSchema: TranscribeAudioOutputSchema,
   },
   async input => {
-    // Note: Gemini Flash is not primarily an STT model.
-    // For real STT, a dedicated STT model/plugin in Genkit would be needed.
-    // This is a placeholder for the STT step.
+    // IMPORTANT: gemini-2.0-flash (or similar general LLMs) are not designed for robust Speech-to-Text.
+    // For accurate transcription, this should use a dedicated STT model/plugin within Genkit.
+    // The current implementation is a placeholder and will likely produce inaccurate results.
+    console.log('[transcribeAudioFlow] Attempting transcription with general LLM (placeholder for dedicated STT). Input language: ', input.languageCode);
     const {output} = await transcribeAudioPrompt(input);
-    if (!output || !output.transcribedText) {
-        // Fallback or error handling if transcription is empty/failed
-        console.warn('[transcribeAudioFlow] Transcription output was empty or invalid from the model.');
-        return { transcribedText: "[Transcription placeholder - STT model needed]" };
+
+    if (!output || !output.transcribedText || output.transcribedText.trim() === "") {
+        console.warn('[transcribeAudioFlow] Transcription output was empty or invalid from the model. This is expected if a non-STT model is used.');
+        return { transcribedText: "[Transcrição imprecisa - Modelo STT dedicado necessário no servidor]" };
     }
+    console.log('[transcribeAudioFlow] Placeholder transcription generated: "', output.transcribedText.substring(0, 50),'..."');
     return output;
   }
 );
+
+// Export ai and z for use in other flows if necessary
+export {ai as genkitAI, z as zod};
