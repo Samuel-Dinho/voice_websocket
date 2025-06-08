@@ -4,6 +4,7 @@
  * @fileOverview This file defines a flow for transcribing audio by
  * calling an external Python script that uses Whisper.
  * It includes placeholders for Voice Activity Detection (VAD) integration.
+ * The Python script now attempts to convert input audio to WAV using FFmpeg.
  *
  * - transcribeAudio - A function that initiates the audio transcription flow.
  * - TranscribeAudioInput - The input type for the transcribeAudio function.
@@ -64,32 +65,29 @@ export async function transcribeAudio(
     
     const mimeTypeMatch = meta.match(/data:(audio\/[^;]+)/);
     if (!mimeTypeMatch || !mimeTypeMatch[1]) {
-        console.error('[transcribeAudioFlow] Could not extract MIME type from audioDataUri.');
+        console.error('[transcribeAudioFlow] Could not extract MIME type from audioDataUri meta:', meta);
         return { transcribedText: '[Error: Could not extract MIME type from audioDataUri]' };
     }
     const mimeType = mimeTypeMatch[1]; // e.g., "audio/webm" or "audio/ogg"
     
-    // Determine extension based on common audio MIME types
     let extension = 'audio'; // default
     if (mimeType === 'audio/webm') {
         extension = 'webm';
-    } else if (mimeType === 'audio/ogg' || mimeType.includes('opus')) { // opus is often in ogg
+    } else if (mimeType === 'audio/ogg' || mimeType.includes('opus')) {
         extension = 'ogg';
     } else if (mimeType === 'audio/wav' || mimeType === 'audio/wave' || mimeType === 'audio/x-wav') {
         extension = 'wav';
     } else if (mimeType === 'audio/mpeg') {
         extension = 'mp3';
-    } else if (mimeType === 'audio/mp4') {
-        extension = 'm4a'; // or mp4, but m4a is common for audio-only mp4
+    } else if (mimeType === 'audio/mp4' || mimeType === 'audio/m4a') {
+        extension = 'm4a';
     }
     console.log(`[transcribeAudioFlow] Extracted MIME type from client: ${mimeType}, determined file extension for temp file: .${extension}`);
 
-
-    // Convert base64 to Buffer
     const audioBuffer = Buffer.from(base64Data, 'base64');
     
     // -------------------------------------------------------------------------
-    // TODO: IMPLEMENT VOICE ACTIVITY DETECTION (VAD) HERE
+    // TODO: IMPLEMENT VOICE ACTIVITY DETECTION (VAD) HERE (Optional but Recommended)
     //
     // 1. Convert `audioBuffer` to Raw PCM if VAD library requires it:
     //    - The `audioBuffer` currently holds potentially compressed audio (e.g., WebM/Opus).
@@ -115,62 +113,52 @@ export async function transcribeAudio(
     // -------------------------------------------------------------------------
 
     // If VAD passed (or is not yet implemented), proceed to save and transcribe.
-    // 2. Save audioBuffer to a temporary file
     const tempDir = os.tmpdir();
-    // Create a unique filename
     tempAudioFilePath = path.join(tempDir, `lingua_vox_stt_${Date.now()}_${Math.random().toString(36).substring(2,7)}.${extension}`);
     
     await fs.writeFile(tempAudioFilePath, audioBuffer);
     console.log(`[transcribeAudioFlow] Temporary audio file saved to: ${tempAudioFilePath} (Size: ${(audioBuffer.length / 1024).toFixed(2)} KB, Type from client: ${mimeType})`);
 
     // 3. Prepare and call the Python script (run_whisper.py)
-    const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python'; // Or 'python' / 'python3'
+    //    The Python script will now attempt FFmpeg conversion internally.
+    const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python'; // Or 'python3'
     
-    // Ensure this path is correct relative to where the Node.js server runs.
-    // process.cwd() is usually the project root.
     const scriptPath = path.join(process.cwd(), 'src', 'scripts', 'python', 'run_whisper.py');
 
-    // Arguments for the script: <audio_file_path> [model_size] [language_code]
     const scriptArgs: string[] = [tempAudioFilePath];
     
-    // You can make the Whisper model configurable, e.g., via environment variable
     const whisperModelToUse = process.env.WHISPER_MODEL || "base"; 
     scriptArgs.push(whisperModelToUse);
 
     if (languageCode && languageCode.trim().toLowerCase() !== 'auto') {
       scriptArgs.push(languageCode.trim());
     }
-    // If languageCode is 'auto' or not provided, run_whisper.py defaults to 'auto'
 
     console.log(`[transcribeAudioFlow] Executing Whisper script: ${pythonExecutable} "${scriptPath}" "${scriptArgs.join('" "')}"`);
 
-    // Execute the Python script
     const { stdout, stderr } = await execFile(pythonExecutable, [scriptPath, ...scriptArgs], {
-      timeout: 60000, // 60-second timeout for transcription
-      maxBuffer: 1024 * 1024 * 5 // 5MB buffer for stdout/stderr
+      timeout: 90000, // 90-second timeout (increased due to potential ffmpeg conversion)
+      maxBuffer: 1024 * 1024 * 10 // 10MB buffer for stdout/stderr
     });
 
     if (stderr) {
-      // Whisper might output warnings to stderr, log it but don't necessarily treat as fatal for all cases.
-      // The "1Torch was not compiled with flash attention" is a UserWarning, not a critical error.
+      // Log all stderr from Python script as it might contain FFmpeg info or Whisper warnings.
       console.warn(`[transcribeAudioFlow] Whisper script stderr: ${stderr.trim()}`);
     }
 
     const transcribedText = stdout.trim();
     console.log(`[transcribeAudioFlow] Whisper script stdout (transcribed text): "${transcribedText.substring(0, 200)}${transcribedText.length > 200 ? "..." : ""}"`);
     
-    // Check for common FFmpeg/Whisper failure patterns in stderr if stdout is empty
     if (!transcribedText && stderr) {
       const errorMsg = stderr.trim();
       console.error(`[transcribeAudioFlow] Transcription likely failed as stdout is empty and stderr has content.`);
-      if (errorMsg.includes("Failed to load audio") || errorMsg.includes("EBML header parsing failed") || errorMsg.includes("Invalid data found when processing input")) {
-        return { transcribedText: `[Whisper STT Error: FFmpeg/Whisper failed to load/process audio file (${tempAudioFilePath}). Details: ${errorMsg.split('\n')[0]}]` };
+      if (errorMsg.includes("FFmpeg falhou") || errorMsg.includes("Failed to load audio") || errorMsg.includes("EBML header parsing failed") || errorMsg.includes("Invalid data found when processing input")) {
+        return { transcribedText: `[Whisper STT Error: FFmpeg/Whisper failed to load/process audio file. Details: ${errorMsg.split('\n').pop()?.trim() || errorMsg.split('\n')[0]}]` };
       }
-      return { transcribedText: `[Whisper STT Error: Script error, transcription empty. Details: ${errorMsg.split('\n')[0]}]` };
+      return { transcribedText: `[Whisper STT Error: Script error, transcription empty. Details: ${errorMsg.split('\n').pop()?.trim() || errorMsg.split('\n')[0]}]` };
     }
     
     if (!transcribedText && !stderr) {
-      // Transcription resulted in empty text, and no error was reported to stderr
       console.warn("[transcribeAudioFlow] Transcription resulted in empty text (stdout and stderr were empty). This might be due to silence or uninterpretable audio.");
       return { transcribedText: `[Whisper STT: Transcription resulted in empty text for ${languageCode || 'audio provided'}]` };
     }
@@ -178,19 +166,21 @@ export async function transcribeAudio(
     return { transcribedText };
 
   } catch (error: any) {
-    // Handle errors from file operations or script execution
     console.error('[transcribeAudioFlow] Exception during Whisper script execution or audio processing:', error.message || error);
     let errorMessage = `[Whisper STT Exception: ${error.message || 'Unknown error'}]`;
-    if (error.stderr) { // child_process error might have stderr with more info
+    if (error.stderr) { 
         const stderrMsg = (error.stderr as Buffer | string).toString().trim();
-        if (stderrMsg.includes("Failed to load audio") || stderrMsg.includes("EBML header parsing failed") || stderrMsg.includes("Invalid data found when processing input")) {
-            errorMessage = `[Whisper STT Script Error: FFmpeg/Whisper failed to process audio. Details: ${stderrMsg.split('\n')[0]}]`;
-        } else {
+        if (stderrMsg.includes("FFmpeg falhou") || stderrMsg.includes("Failed to load audio") || stderrMsg.includes("EBML header parsing failed") || stderrMsg.includes("Invalid data found when processing input")) {
+            errorMessage = `[Whisper STT Script Error: FFmpeg/Whisper failed to process audio. Details: ${stderrMsg.split('\n').pop()?.trim() || stderrMsg.split('\n')[0]}]`;
+        } else if (stderrMsg.includes("Ocorreu um erro no script Python")){
+            errorMessage = `[Whisper STT Script Error: Python script failed. Details: ${stderrMsg.split('\n').pop()?.trim() || stderrMsg}]`;
+        }
+         else {
             errorMessage = `[Whisper STT Script Execution Error: ${stderrMsg.split('\n').pop()?.trim() || stderrMsg || error.message}]`;
         }
-    } else if (error.stdout) { // And stdout with error message from script
+    } else if (error.stdout) { 
          errorMessage = `[Whisper STT Script Output Error: ${(error.stdout as Buffer | string).toString().trim().split('\n').pop()?.trim() || (error.stdout as Buffer | string).toString().trim() || error.message}]`;
-    } else if (error.code) { // e.g. if python script exits with non-zero code
+    } else if (error.code) {
         errorMessage += ` (Exit Code: ${error.code})`;
     }
     
@@ -198,20 +188,13 @@ export async function transcribeAudio(
     
     return { transcribedText: errorMessage };
   } finally {
-    // 4. Clean up the temporary audio file
     if (tempAudioFilePath) {
       try {
         await fs.unlink(tempAudioFilePath);
         console.log(`[transcribeAudioFlow] Temporary audio file removed: ${tempAudioFilePath}`);
       } catch (unlinkError: any) {
-        // Log an error if the temporary file cannot be removed, but don't fail the whole process
         console.warn(`[transcribeAudioFlow] Failed to remove temporary audio file ${tempAudioFilePath}:`, unlinkError.message);
       }
     }
   }
 }
-
-// Nota: A integração VAD, conforme descrito nos comentários TODO, é uma otimização importante
-// a ser considerada para evitar o processamento desnecessário de silêncio.
-// A lógica atual chama o script Whisper para cada chunk de áudio recebido que passa
-// as verificações iniciais do audioDataUri.
