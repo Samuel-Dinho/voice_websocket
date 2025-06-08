@@ -12,7 +12,7 @@
  * - TranscribeAudioOutput - The return type for the transcribeAudio function.
  */
 
-import {ai} from '@/ai/genkit';
+import {ai} from '@/ai/genkit'; // ai might be used for other things or Genkit context, so keep it for now.
 import {z} from 'genkit';
 
 const TranscribeAudioInputSchema = z.object({
@@ -43,15 +43,37 @@ export async function transcribeAudio(
   // Simulate Whisper STT integration
   // In a real scenario, you would:
   // 1. Decode input.audioDataUri (base64) to binary audio.
+  //    - Example: const base64Data = input.audioDataUri.split(',')[1];
+  //    - Example: const audioBuffer = Buffer.from(base64Data, 'base64');
+  //
   // 2. Save it as a temporary audio file (e.g., .wav, .webm) or prepare an audio buffer.
   //    - Ensure the format is compatible with your Whisper setup. FFmpeg might be needed.
+  //    - Example: import fs from 'fs/promises'; import path from 'path';
+  //    - Example: const tempFilePath = path.join(os.tmpdir(), `whisper_input_${Date.now()}.webm`);
+  //    - Example: await fs.writeFile(tempFilePath, audioBuffer);
+  //
   // 3. Invoke your Whisper model/library:
   //    - This could be a local Python script called via child_process.
-  //    - Or a Node.js binding for Whisper if one exists and is suitable.
+  //      Example: import { exec } from 'child_process';
+  //      const command = `python /path/to/your/whisper_script.py --audio_file ${tempFilePath} --language ${input.languageCode || 'auto'}`;
+  //      const { stdout, stderr } = await new Promise((resolve, reject) => {
+  //         exec(command, (error, stdout, stderr) => {
+  //           if (error) reject(error);
+  //           else resolve({ stdout, stderr });
+  //         });
+  //       });
+  //       transcribedText = stdout.trim();
+  //
+  //    - Or a Node.js binding for Whisper if one exists and is suitable (e.g., using a WASM build or NAPI).
   //    - Or a call to a separate microservice you've set up that hosts Whisper.
   //    - Pass the audio file/buffer and potentially input.languageCode as a hint.
+  //
   // 4. Capture the transcribed text output from Whisper.
+  //
   // 5. Handle any errors during this process.
+  //
+  // 6. Clean up temporary files if created.
+  //    - Example: await fs.unlink(tempFilePath);
 
   try {
     // FOR TESTING PURPOSES, WE'LL RETURN A FIXED SIMULATED WHISPER TRANSCRIPTION:
