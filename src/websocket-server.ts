@@ -15,12 +15,16 @@ console.log(`[WebSocketServer] Iniciado em ws://localhost:${PORT}`);
 
 const audioSubscribers = new Set<WebSocket>();
 
-// Cache para evitar re-processamento do mesmo texto simulado
+// Cache para evitar re-processamento desnecessário
 let lastProcessedInfo: {
-  originalText: string;
+  // Para áudio do sistema, o originalText pode ser um placeholder. O audioHash seria ideal.
+  // Por simplicidade, usaremos o originalText (que o cliente agora torna único).
+  originalText: string; 
   sourceLanguage: string;
   targetLanguage: string;
   translatedText: string;
+  // Idealmente, adicionar um hash do áudio para áudio do sistema
+  // audioHash?: string; 
 } | null = null;
 
 wss.on('connection', (ws: WebSocket) => {
@@ -45,7 +49,6 @@ wss.on('connection', (ws: WebSocket) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ message: 'Inscrito para receber áudio traduzido.' }));
       }
-      // Enviar a última tradução conhecida (se houver) para o novo assinante
       if (lastProcessedInfo && lastProcessedInfo.translatedText) {
         console.log(`[WebSocketServer] Enviando última tradução conhecida para novo assinante: "${lastProcessedInfo.translatedText.substring(0,30)}..."`);
         if (ws.readyState === WebSocket.OPEN) {
@@ -62,24 +65,30 @@ wss.on('connection', (ws: WebSocket) => {
       }
     } else if (parsedData.action === 'process_speech' && parsedData.sourceLanguage && parsedData.targetLanguage) {
       
-      let textToTranslate = parsedData.transcribedText;
+      let textToTranslate = parsedData.transcribedText; // Pode ser texto real (microfone) ou placeholder (sistema)
       const currentSourceLanguage = parsedData.sourceLanguage;
       const currentTargetLanguage = parsedData.targetLanguage;
-      let transcriptionSource = parsedData.audioSourceMode === "microphone" ? "Microphone (Client)" : "System Audio (Server STT)";
+      const audioSourceMode = parsedData.audioSourceMode;
+      let transcriptionSource = audioSourceMode === "microphone" ? "Microphone (Client STT)" : "System Audio (Server STT)";
       let sttErrorOccurred = false;
 
       try {
-        if (parsedData.audioSourceMode === "system" && parsedData.audioDataUri) {
+        // Se for áudio do sistema, o 'transcribedText' recebido é um placeholder.
+        // O áudio real está em 'audioDataUri' e precisa ser transcrito.
+        if (audioSourceMode === "system" && parsedData.audioDataUri) {
+          console.log(`[WebSocketServer] Recebido áudio do sistema com placeholder: "${textToTranslate}". Transcrevendo...`);
           const transcriptionInput: TranscribeAudioInput = {
             audioDataUri: parsedData.audioDataUri,
             languageCode: currentSourceLanguage,
           };
           const transcriptionOutput = await transcribeAudio(transcriptionInput);
-          textToTranslate = transcriptionOutput.transcribedText;
-          if (!textToTranslate || textToTranslate.startsWith("[Simulação Whisper falhou:") || textToTranslate.startsWith("[Simulação Whisper: Transcrição resultou em texto vazio")) {
+          textToTranslate = transcriptionOutput.transcribedText; // Agora textToTranslate é o texto transcrito real
+          
+          if (!textToTranslate || textToTranslate.startsWith("[Whisper STT Error:") || textToTranslate.startsWith("[Whisper STT: Transcription resulted in empty text")) {
             sttErrorOccurred = true;
           }
-        } else if (parsedData.audioSourceMode === "microphone") {
+        } else if (audioSourceMode === "microphone") {
+           // Para áudio do microfone, o 'transcribedText' já é o texto transcrito pelo cliente.
            if (!textToTranslate) {
             console.warn('[WebSocketServer] Modo Microfone, mas texto transcrito está vazio. Não prosseguindo com tradução.');
              if (ws.readyState === WebSocket.OPEN) {
@@ -90,34 +99,43 @@ wss.on('connection', (ws: WebSocket) => {
         }
 
         if (!textToTranslate || textToTranslate.trim() === "" || sttErrorOccurred) {
-            const reason = sttErrorOccurred ? textToTranslate : "Texto vazio ou nulo";
-            console.warn(`[WebSocketServer] Texto para tradução está '${reason}' após tentativa de transcrição (fonte: ${transcriptionSource}). Não prosseguindo com tradução.`);
+            const reason = sttErrorOccurred ? textToTranslate : "Texto vazio ou nulo após STT (se aplicável)";
+            console.warn(`[WebSocketServer] Texto para tradução está '${reason}' (fonte: ${transcriptionSource}). Não prosseguindo com tradução.`);
             if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ 
-                    originalTextForDebug: textToTranslate,
+                    originalTextForDebug: textToTranslate, // pode ser o erro do STT
                     translationError: `Tradução não solicitada: ${reason}` 
                 }));
             }
             return; 
         }
         
-        // Verificar cache ANTES de traduzir
+        // Lógica de Cache:
+        // Se o texto original (real ou placeholder único do cliente) e idiomas são os mesmos,
+        // E (para áudio de sistema) o texto transcrito real também é o mesmo (se já tivermos um),
+        // então podemos considerar um cache hit.
+        // Para simplificar, se for áudio do sistema, e o placeholder for o mesmo, não usaremos o cache
+        // para forçar o reprocessamento do áudio, a menos que queiramos implementar hash de áudio.
+        // A unicidade do placeholder do cliente (`[System Audio Segment ${Date.now()}]`) já ajuda aqui.
+
         if (
           lastProcessedInfo &&
-          lastProcessedInfo.originalText === textToTranslate &&
+          lastProcessedInfo.originalText === textToTranslate && // Comparando com o texto *após* STT do servidor (se aplicável)
           lastProcessedInfo.sourceLanguage === currentSourceLanguage &&
-          lastProcessedInfo.targetLanguage === currentTargetLanguage
+          lastProcessedInfo.targetLanguage === currentTargetLanguage &&
+          // Evitar cache agressivo se o "originalText" é apenas um placeholder repetitivo,
+          // mas agora o cliente envia placeholders únicos, então essa condição é mais segura.
+          !parsedData.transcribedText?.startsWith("[System Audio Segment") // Não usar cache se o texto *original do cliente* era um placeholder de sistema
         ) {
-          console.log(`[WebSocketServer] Cache hit. Texto original ("${textToTranslate.substring(0,30)}...") e idiomas são os mesmos. Reenviando tradução anterior.`);
+          console.log(`[WebSocketServer] Cache hit para texto transcrito: "${textToTranslate.substring(0,30)}..." e idiomas. Reenviando tradução anterior.`);
           if (ws.readyState === WebSocket.OPEN) { 
             ws.send(JSON.stringify({ translatedText: lastProcessedInfo.translatedText, originalTextForDebug: textToTranslate.substring(0, 100) }));
           }
-          // Os listeners já devem ter a última tradução ou a receberão se se inscreverem.
-          // Não precisa reenviar para todos os listeners aqui, pois a lógica de "subscribe_audio" já cuida disso.
+          // Listeners já devem ter ou receberão ao se inscrever.
           return; 
         }
 
-        console.log(`[WebSocketServer] Preparando para traduzir texto (fonte: ${transcriptionSource}): "${textToTranslate.substring(0,30)}..."`);
+        console.log(`[WebSocketServer] Preparando para traduzir texto (fonte: ${transcriptionSource}): "${textToTranslate.substring(0,50)}..."`);
         const translationInput: ImproveTranslationAccuracyInput = {
           text: textToTranslate,
           sourceLanguage: currentSourceLanguage,
@@ -125,9 +143,9 @@ wss.on('connection', (ws: WebSocket) => {
         };
         const translationOutput = await improveTranslationAccuracy(translationInput);
         
-        // Atualizar cache
+        // Atualizar cache com o texto *realmente* traduzido
         lastProcessedInfo = {
-          originalText: textToTranslate,
+          originalText: textToTranslate, // O texto que foi efetivamente para tradução
           sourceLanguage: currentSourceLanguage,
           targetLanguage: currentTargetLanguage,
           translatedText: translationOutput.translatedText,
@@ -162,9 +180,10 @@ wss.on('connection', (ws: WebSocket) => {
         } else if(error.message){
             errorMessage = `Erro na API GenAI: ${error.message}`;
         }
-        lastProcessedInfo = null; // Limpar cache em caso de erro
+        // Não limpar lastProcessedInfo aqui, pois o erro pode ser da tradução, não do STT.
+        // lastProcessedInfo = null; 
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ error: errorMessage, originalTextForDebug: textToTranslate?.substring(0,100) || "[Texto para tradução não disponível no erro]" }));
+          ws.send(JSON.stringify({ error: errorMessage, originalTextForDebug: textToTranslate?.substring(0,100) || parsedData.transcribedText?.substring(0,100) || "[Texto original não disponível no erro]" }));
         }
       }
     } else {
@@ -201,6 +220,5 @@ wss.on('connection', (ws: WebSocket) => {
 wss.on('error', (error: Error) => {
   console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error.message, error);
 });
-    
 
     
