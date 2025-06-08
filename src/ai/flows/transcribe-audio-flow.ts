@@ -2,17 +2,15 @@
 'use server';
 /**
  * @fileOverview This file defines a Genkit flow for transcribing audio.
- * It's currently set up to SIMULATE a Whisper STT integration for testing purposes.
- * For actual transcription, the commented-out sections for Whisper integration
- * need to be implemented, and Whisper (or a similar STT model) needs to be
- * available and callable from the server environment.
+ * It is currently a PLACEHOLDER for a real Speech-to-Text (STT) integration.
+ * You need to replace the placeholder logic with actual STT processing (e.g., using Whisper, Google Cloud Speech-to-Text, etc.).
  *
- * - transcribeAudio - A function that initiates the audio transcription flow.
+ * - transcribeAudio - A function that will initiate the audio transcription flow.
  * - TranscribeAudioInput - The input type for the transcribeAudio function.
  * - TranscribeAudioOutput - The return type for the transcribeAudio function.
  */
 
-import {ai} from '@/ai/genkit'; // ai might be used for other things or Genkit context, so keep it for now.
+import {ai} from '@/ai/genkit'; 
 import {z} from 'genkit';
 
 const TranscribeAudioInputSchema = z.object({
@@ -34,73 +32,83 @@ export type TranscribeAudioOutput = z.infer<
   typeof TranscribeAudioOutputSchema
 >;
 
-// This is the main function called by the WebSocket server.
 export async function transcribeAudio(
   input: TranscribeAudioInput
 ): Promise<TranscribeAudioOutput> {
-  console.log(`[transcribeAudioFlow] Called with language: ${input.languageCode || 'not specified'}. Audio URI (first 60 chars): ${input.audioDataUri.substring(0, 60)}`);
-  
-  // Simulate Whisper STT integration
-  // In a real scenario, you would:
-  // 1. Decode input.audioDataUri (base64) to binary audio.
-  //    - Example: const base64Data = input.audioDataUri.split(',')[1];
-  //    - Example: const audioBuffer = Buffer.from(base64Data, 'base64');
+  console.log(`[transcribeAudioFlow] Called for real STT integration. Language: ${input.languageCode || 'not specified'}. Audio URI (first 60 chars): ${input.audioDataUri.substring(0, 60)}`);
+
+  // ===================================================================================
+  // TODO: IMPLEMENT REAL SPEECH-TO-TEXT (STT) INTEGRATION HERE
   //
-  // 2. Save it as a temporary audio file (e.g., .wav, .webm) or prepare an audio buffer.
-  //    - Ensure the format is compatible with your Whisper setup. FFmpeg might be needed.
-  //    - Example: import fs from 'fs/promises'; import path from 'path';
-  //    - Example: const tempFilePath = path.join(os.tmpdir(), `whisper_input_${Date.now()}.webm`);
-  //    - Example: await fs.writeFile(tempFilePath, audioBuffer);
+  // Steps for a real STT integration (e.g., with self-hosted Whisper or a cloud STT API):
   //
-  // 3. Invoke your Whisper model/library:
-  //    - This could be a local Python script called via child_process.
-  //      Example: import { exec } from 'child_process';
-  //      const command = `python /path/to/your/whisper_script.py --audio_file ${tempFilePath} --language ${input.languageCode || 'auto'}`;
-  //      const { stdout, stderr } = await new Promise((resolve, reject) => {
-  //         exec(command, (error, stdout, stderr) => {
-  //           if (error) reject(error);
-  //           else resolve({ stdout, stderr });
-  //         });
-  //       });
-  //       transcribedText = stdout.trim();
+  // 1. Decode `input.audioDataUri`:
+  //    - The `audioDataUri` is a base64 encoded string. You need to extract the base64 part.
+  //      Example: const base64Data = input.audioDataUri.split(',')[1];
+  //    - Convert the base64 data to a binary Buffer.
+  //      Example: const audioBuffer = Buffer.from(base64Data, 'base64');
   //
-  //    - Or a Node.js binding for Whisper if one exists and is suitable (e.g., using a WASM build or NAPI).
-  //    - Or a call to a separate microservice you've set up that hosts Whisper.
-  //    - Pass the audio file/buffer and potentially input.languageCode as a hint.
+  // 2. Prepare audio for STT model/service:
+  //    - Save the `audioBuffer` to a temporary file (e.g., .wav, .webm, .opus). The format
+  //      must be compatible with your chosen STT solution. FFmpeg might be needed for conversion.
+  //      Example:
+  //        // import fs from 'fs/promises'; // (or 'fs')
+  //        // import path from 'path';
+  //        // import os from 'os';
+  //        // const tempFilePath = path.join(os.tmpdir(), `stt_input_${Date.now()}.webm`);
+  //        // await fs.writeFile(tempFilePath, audioBuffer);
+  //    - Alternatively, some STT libraries/SDKs might accept the audioBuffer directly.
   //
-  // 4. Capture the transcribed text output from Whisper.
+  // 3. Invoke your STT model/service:
+  //    - If using self-hosted Whisper (Python):
+  //      - You might call a Python script using `child_process.execFile` or `child_process.spawn`.
+  //        Example:
+  //          // import { execFile } from 'child_process';
+  //          // const { stdout, stderr } = await new Promise((resolve, reject) => {
+  //          //   execFile('python', ['/path/to/your/whisper_script.py', '--audio_file', tempFilePath, '--language', input.languageCode || 'auto'], (error, stdout, stderr) => {
+  //          //     if (error) reject(error);
+  //          //     else resolve({ stdout, stderr });
+  //          //   });
+  //          // });
+  //          // let transcribedText = stdout.trim();
+  //    - If using a cloud STT service (Google Cloud Speech-to-Text, AWS Transcribe, Azure Speech):
+  //      - Use their respective Node.js SDKs to send the audio data (file or buffer) and get the transcription.
+  //      - This typically involves setting up API keys and authentication.
   //
-  // 5. Handle any errors during this process.
+  // 4. Handle the STT result:
+  //    - Extract the transcribed text from the STT service's response.
+  //    - Implement robust error handling for API call failures, empty transcriptions, etc.
   //
-  // 6. Clean up temporary files if created.
-  //    - Example: await fs.unlink(tempFilePath);
+  // 5. Clean up:
+  //    - If you created temporary files, delete them.
+  //      Example: // await fs.unlink(tempFilePath);
+  //
+  // ===================================================================================
 
   try {
-    // FOR TESTING PURPOSES, WE'LL RETURN A FIXED SIMULATED WHISPER TRANSCRIPTION:
-    const simulatedWhisperText = `[Simulated Whisper STT for ${input.languageCode || 'audio'}]: Este é um teste. O áudio da aba foi "processado" pelo Whisper.`;
+    // FOR NOW: Returning a placeholder text. Replace this with actual transcribed text from your STT.
+    const placeholderText = `[Real STT Implementation Pending for ${input.languageCode || 'audio'}] This is a placeholder. Implement actual STT to process the audio.`;
     
-    console.log(`[transcribeAudioFlow] Simulated Whisper STT successful. Result: "${simulatedWhisperText.substring(0,100)}..."`);
+    console.log(`[transcribeAudioFlow] Real STT not implemented. Returning placeholder: "${placeholderText.substring(0,100)}..."`);
     
-    if (!simulatedWhisperText || simulatedWhisperText.trim() === "") {
-        console.warn("[transcribeAudioFlow] Simulated Whisper STT result was empty.");
-        // Even if empty, return it so the server can decide not to translate an empty string.
-        return { transcribedText: `[Simulação Whisper: Transcrição resultou em texto vazio para ${input.languageCode || 'áudio fornecido'}]` };
+    if (!placeholderText || placeholderText.trim() === "") {
+        console.warn("[transcribeAudioFlow] Placeholder STT result was empty (should not happen with current fixed placeholder).");
+        return { transcribedText: `[STT Placeholder Error: Result was empty for ${input.languageCode || 'audio provided'}]` };
     }
     
-    return { transcribedText: simulatedWhisperText };
+    return { transcribedText: placeholderText };
 
   } catch (error: any) {
-    console.error('[transcribeAudioFlow] Error during simulated Whisper STT attempt:', error.message || error, error.cause || error.stack);
-    const errorMessage = error.cause?.message || error.message || 'Erro desconhecido na simulação de transcrição Whisper';
-    // Return an error-like placeholder if the simulation itself fails (though unlikely with current fixed text)
-    return { transcribedText: `[Simulação Whisper falhou: ${errorMessage}]` };
+    console.error('[transcribeAudioFlow] Error during STT integration attempt (or placeholder logic):', error.message || error, error.cause || error.stack);
+    const errorMessage = error.cause?.message || error.message || 'Unknown error during STT processing';
+    // Return an error-like placeholder if the STT process itself fails
+    return { transcribedText: `[STT Error: ${errorMessage}]` };
   }
 }
 
-// Note: ai.defineFlow and ai.definePrompt are not used in this version as we are
-// directly implementing the simulation logic in the exported `transcribeAudio` function.
-// If integrating a Genkit-compatible STT model plugin in the future,
-// you would likely reintroduce defineFlow and definePrompt here.
+// Genkit's ai.defineFlow and ai.definePrompt are not used here as this flow
+// is intended to directly integrate with an STT system (like Whisper or a cloud API)
+// rather than using an LLM for the STT task itself.
+// You would call the STT system and then return its output.
 
-// Export z for use in other flows if necessary (though 'ai' is not used in this file directly anymore)
 export {ai as genkitAI, z as zod};
