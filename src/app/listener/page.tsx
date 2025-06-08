@@ -85,7 +85,7 @@ export default function ListenerPage() {
     }
     if (window.speechSynthesis.speaking) {
         console.log("[Listener] SpeechSynthesis já está falando. Não iniciando nova utterance.");
-        if (!isSpeaking) setIsSpeaking(true); // Garante que nosso estado reflita a realidade
+        if (!isSpeaking) setIsSpeaking(true); 
         return;
     }
     if (utteranceQueueRef.current.length === 0) {
@@ -140,7 +140,7 @@ export default function ListenerPage() {
       console.warn("[Listener] speakNextInQueue: utterance era nula ou fila ficou vazia inesperadamente.");
       if (isSpeaking) setIsSpeaking(false);
     }
-  }, [audioActivated, isSpeaking, availableVoices, setIsSpeaking, setLastMessage]); // isSpeaking e setIsSpeaking são dependências aqui
+  }, [audioActivated, isSpeaking, availableVoices, setIsSpeaking, setLastMessage]); 
 
   useEffect(() => {
     speakNextInQueueRef.current = speakNextInQueue;
@@ -179,7 +179,7 @@ export default function ListenerPage() {
         setIsSpeaking(false); 
         speakNextInQueueRef.current();
     }
-  }, [availableVoices, setIsSpeaking]); // setIsSpeaking é dependência
+  }, [availableVoices, setIsSpeaking]);
 
   useEffect(() => {
     console.log("[Listener] useEffect principal EXECUTANDO. Conectando WebSocket. lastSuccessfullyEnqueuedTextRef.current no início:", lastSuccessfullyEnqueuedTextRef.current);
@@ -210,14 +210,19 @@ export default function ListenerPage() {
         console.log("[Listener] Mensagem parseada recebida. Tipo:", serverMessage.type, "Conteúdo:", serverMessage);
         
         if (serverMessage.type === "translated_text_for_listener" && serverMessage.text && serverMessage.targetLanguage) {
-          setLastMessage(`Texto traduzido recebido para ${serverMessage.targetLanguage}: "${serverMessage.text.substring(0,30)}..." (${new Date().toLocaleTimeString()})`);
           const textToSpeak = serverMessage.text;
+          const normalizedTextToSpeak = textToSpeak.trim();
+          const normalizedLastEnqueuedText = lastSuccessfullyEnqueuedTextRef.current ? lastSuccessfullyEnqueuedTextRef.current.trim() : null;
 
-          console.log(`[Listener] Comparando texto recebido ("${textToSpeak.substring(0,30)}...") com lastSuccessfullyEnqueuedTextRef ("${lastSuccessfullyEnqueuedTextRef.current ? lastSuccessfullyEnqueuedTextRef.current.substring(0,30) : 'null'}...")`);
-          if (textToSpeak === lastSuccessfullyEnqueuedTextRef.current) {
-            console.log(`[Listener] Texto traduzido recebido é o MESMO que o último enfileirado com sucesso. Ignorando para fala: "${textToSpeak.substring(0,30)}..."`);
+          console.log(`[Listener] Comparando texto recebido (normalizado: "${normalizedTextToSpeak.substring(0,30)}...") com lastSuccessfullyEnqueuedTextRef (normalizado: "${normalizedLastEnqueuedText ? normalizedLastEnqueuedText.substring(0,30) : 'null'}...")`);
+          
+          if (normalizedTextToSpeak && normalizedTextToSpeak === normalizedLastEnqueuedText) {
+            console.log(`[Listener] Texto traduzido normalizado é o MESMO que o último enfileirado com sucesso. Ignorando para fala: "${normalizedTextToSpeak.substring(0,30)}..."`);
+            setLastMessage(`Texto repetido ignorado: "${normalizedTextToSpeak.substring(0,20)}..." (${new Date().toLocaleTimeString()})`);
             return; 
           }
+          
+          setLastMessage(`Texto traduzido recebido para ${serverMessage.targetLanguage}: "${textToSpeak.substring(0,30)}..." (${new Date().toLocaleTimeString()})`);
 
           const sentences = textToSpeak.match(/[^.!?]+(?:[.!?]+["']?|$)/g) || [];
           if (sentences.length === 0 && textToSpeak.trim()) { sentences.push(textToSpeak.trim()); }
@@ -235,7 +240,7 @@ export default function ListenerPage() {
 
           if (utterancesAddedCount > 0) {
             const previousRefValue = lastSuccessfullyEnqueuedTextRef.current;
-            lastSuccessfullyEnqueuedTextRef.current = textToSpeak; 
+            lastSuccessfullyEnqueuedTextRef.current = textToSpeak; // Armazena o texto original completo que foi processado e enfileirado
             console.log(`[Listener] ${utterancesAddedCount} utterance(s) adicionada(s) à fila. lastSuccessfullyEnqueuedTextRef ATUALIZADO de "${previousRefValue ? previousRefValue.substring(0,30) : 'null'}" para "${textToSpeak.substring(0, 50)}...". Tamanho total da fila: ${utteranceQueueRef.current.length}`);
             speakNextInQueueRef.current();
           } else {
@@ -291,7 +296,7 @@ export default function ListenerPage() {
       lastSuccessfullyEnqueuedTextRef.current = null;
       console.log("[Listener] Cleanup do useEffect principal finalizado. lastSuccessfullyEnqueuedTextRef.current é:", lastSuccessfullyEnqueuedTextRef.current);
     };
-  }, []); // Alterado para dependência vazia
+  }, []); 
 
   return (
     <div className="flex flex-col items-center min-h-screen p-4 md:p-8 bg-background text-foreground">
@@ -382,3 +387,5 @@ export default function ListenerPage() {
     </div>
   );
 }
+
+    
