@@ -42,6 +42,7 @@ wss.on('connection', (ws: WebSocket) => {
       
       let textToTranslate = parsedData.transcribedText;
       let transcriptionSource = parsedData.audioSourceMode === "microphone" ? "Microphone (Client)" : "System Audio (Server STT)";
+      let sttErrorOccurred = false;
 
       try {
         if (parsedData.audioSourceMode === "system" && parsedData.audioDataUri) {
@@ -52,12 +53,16 @@ wss.on('connection', (ws: WebSocket) => {
           };
           const transcriptionOutput = await transcribeAudio(transcriptionInput);
           textToTranslate = transcriptionOutput.transcribedText;
+          if (textToTranslate.startsWith("[") && textToTranslate.endsWith("]")) { // Verifica se é um placeholder de erro/vazio do STT
+            sttErrorOccurred = true;
+          }
           // console.log(`[WebSocketServer] Texto transcrito (do áudio da tela/aba): "${textToTranslate ? textToTranslate.substring(0,50) : 'Falha na transcrição ou áudio vazio'}"`);
         } else if (parsedData.audioSourceMode === "microphone") {
            if (!textToTranslate) {
             console.warn('[WebSocketServer] Modo Microfone, mas texto transcrito está vazio. Não prosseguindo com tradução.');
              if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ error: 'Texto transcrito do microfone estava vazio.' }));
+              // Enviar feedback ao cliente original que o texto do microfone estava vazio
+              ws.send(JSON.stringify({ originalTextForDebug: "", translationError: 'Texto transcrito do microfone estava vazio. Nenhuma tradução solicitada.' }));
              }
              return;
            }
@@ -65,31 +70,18 @@ wss.on('connection', (ws: WebSocket) => {
         }
 
 
-        if (!textToTranslate || textToTranslate.trim() === "" || textToTranslate.startsWith("[Transcrição falhou:") || textToTranslate.startsWith("[Erro na transcrição") || textToTranslate.startsWith("[Erro interno na transcrição")) {
+        if (!textToTranslate || textToTranslate.trim() === "" || sttErrorOccurred) {
             const reason = !textToTranslate || textToTranslate.trim() === "" ? "Texto vazio ou nulo" : textToTranslate;
             console.warn(`[WebSocketServer] Texto para tradução está '${reason}' após tentativa de transcrição (fonte: ${transcriptionSource}). Não prosseguindo com tradução.`);
+            
             if (ws.readyState === WebSocket.OPEN) {
-                // Não enviar erro para o cliente se for apenas um chunk que não resultou em texto,
-                // a menos que seja um erro explícito do STT.
-                // Silenciosamente ignorar para chunks se o texto for apenas vazio.
-                if (textToTranslate.startsWith("[")) { // Se for uma das nossas mensagens de erro/placeholder
-                   // Se estamos enviando chunks e o STT falha para um chunk, pode ser melhor não enviar erro ao cliente
-                   // para não poluir, mas logar no servidor.
-                   console.log(`[WebSocketServer] STT retornou placeholder/erro: ${textToTranslate}. Não enviando tradução para este chunk/segmento.`);
-                } else if (parsedData.audioSourceMode === "microphone" && (!textToTranslate || textToTranslate.trim() === "")) {
-                   // Se for microfone e texto vazio, já foi tratado acima.
-                }
+                // Enviar feedback ao cliente original sobre o estado da transcrição
+                ws.send(JSON.stringify({ 
+                    originalTextForDebug: textToTranslate, // pode ser o texto do erro STT ou vazio
+                    translationError: `Tradução não solicitada: ${reason}` 
+                }));
             }
-            // Se textToTranslate for uma string vazia (ex: silêncio detectado pelo STT), não há o que traduzir.
-            // Se for uma das nossas mensagens de erro, também não traduzir.
-            // Isso evita que o listener receba traduções de "[Silêncio detectado]" etc.
-            if (ws.readyState === WebSocket.OPEN && textToTranslate && textToTranslate.trim() !== "") {
-                 // Enviar o texto "transcrito" (que pode ser um erro STT) para o cliente original,
-                 // mas não para os listeners de áudio, pois não é uma tradução.
-                 // A UI do cliente original pode querer mostrar "Falha na transcrição do chunk X".
-                 // ws.send(JSON.stringify({ originalTextAfterSTT: textToTranslate })); // Opcional
-            }
-            return; // Não prosseguir com tradução
+            return; 
         }
         
         // console.log(`[WebSocketServer] Preparando para traduzir texto (fonte: ${transcriptionSource}): "${textToTranslate.substring(0,30)}..."`);
@@ -131,7 +123,7 @@ wss.on('connection', (ws: WebSocket) => {
             errorMessage = `Erro na API GenAI: ${error.message}`;
         }
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ error: errorMessage }));
+          ws.send(JSON.stringify({ error: errorMessage, originalTextForDebug: textToTranslate?.substring(0,100) || "[Texto para tradução não disponível no erro]" }));
         }
       }
     } else {
@@ -169,6 +161,4 @@ wss.on('connection', (ws: WebSocket) => {
 wss.on('error', (error: Error) => {
   console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error.message, error);
 });
-    
-
     
