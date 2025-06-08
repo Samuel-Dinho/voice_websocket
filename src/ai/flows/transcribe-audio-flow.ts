@@ -115,7 +115,7 @@ export async function transcribeAudio(
     console.log(`[transcribeAudioFlow] Temporary audio file saved to: ${tempAudioFilePath} (Size: ${(audioBuffer.length / 1024).toFixed(2)} KB)`);
 
     // 3. Prepare and call the Python script (run_whisper.py)
-    const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python3'; // Or 'python'
+    const pythonExecutable = process.env.PYTHON_EXECUTABLE || 'python'; // Or 'python'
     
     // Ensure this path is correct relative to where the Node.js server runs.
     // process.cwd() is usually the project root during development.
