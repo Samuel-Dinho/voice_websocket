@@ -105,7 +105,7 @@ export default function ListenerPage() {
         if (!voice && targetLangLC !== targetLangPrefixLC) voice = availableVoices.find(v => v.lang.toLowerCase() === targetLangLC);
         if (voice) {
           utterance.voice = voice;
-          utterance.lang = voice.lang;
+          utterance.lang = voice.lang; // Use the voice's lang for potentially better compatibility
           console.log(`[Listener] Voz encontrada e definida: ${voice.name} (${voice.lang}) para o texto: "${utterance.text.substring(0,30)}..."`);
         } else {
           console.warn(`[Listener] Nenhuma voz específica encontrada para ${targetLangLC} (prefixo ${targetLangPrefixLC}). Usando padrão do navegador para ${utterance.lang}. Texto: "${utterance.text.substring(0,30)}..."`);
@@ -158,15 +158,17 @@ export default function ListenerPage() {
         utteranceQueueRef.current = [];
         setIsSpeaking(false); 
         const unlockUtterance = new SpeechSynthesisUtterance(" ");
-        unlockUtterance.volume = 0.01;
+        unlockUtterance.volume = 0.01; // Make it silent
+        // Try to find an English voice for broader compatibility of the unlock utterance
         const englishVoice = availableVoices.find(v => v.lang.toLowerCase().startsWith("en") && v.default) || availableVoices.find(v => v.lang.toLowerCase().startsWith("en"));
-        unlockUtterance.lang = englishVoice ? englishVoice.lang : "en-US";
+        unlockUtterance.lang = englishVoice ? englishVoice.lang : "en-US"; // Default to en-US if no specific English voice found
         if (englishVoice) unlockUtterance.voice = englishVoice;
+        
         unlockUtterance.onstart = () => console.log("[Listener] Unlock utterance onstart.");
         unlockUtterance.onend = () => {
             console.log("[Listener] Unlock utterance onend.");
-            setIsSpeaking(false); 
-            speakNextInQueueRef.current(); 
+            setIsSpeaking(false); // Ensure isSpeaking is false after unlock
+            speakNextInQueueRef.current(); // Try to speak anything that might have been queued
         };
         unlockUtterance.onerror = (event) => {
             console.error("[Listener] Unlock utterance onerror:", event.error, "Evento:", event);
@@ -176,10 +178,10 @@ export default function ListenerPage() {
         window.speechSynthesis.speak(unlockUtterance);
     } catch (e) {
         console.error("[Listener] Erro ao tentar utterance de desbloqueio de áudio:", e);
-        setIsSpeaking(false); 
+        setIsSpeaking(false); // Ensure isSpeaking is false on error
         speakNextInQueueRef.current();
     }
-  }, [availableVoices, setIsSpeaking]);
+  }, [availableVoices, setIsSpeaking]); // Added setIsSpeaking to dependencies
 
   useEffect(() => {
     console.log("[Listener] useEffect principal EXECUTANDO. Conectando WebSocket. lastSuccessfullyEnqueuedTextRef.current no início:", lastSuccessfullyEnqueuedTextRef.current);
@@ -200,6 +202,8 @@ export default function ListenerPage() {
       console.log("[Listener] WebSocket conectado.");
       setListenerState("connected");
       setLastMessage("Conectado. Aguardando ativação de áudio se necessário.");
+      lastSuccessfullyEnqueuedTextRef.current = null; // Reset on new connection
+      console.log("[Listener] onopen: Resetando lastSuccessfullyEnqueuedTextRef.current para null.");
       newWs.send(JSON.stringify({ action: "subscribe_audio" }));
     };
 
@@ -207,10 +211,11 @@ export default function ListenerPage() {
       if (ws.current !== newWs) { console.log("[Listener] onmessage: Conexão antiga, ignorando mensagem."); return; }
       try {
         const serverMessage = JSON.parse(event.data as string);
-        console.log("[Listener] Mensagem parseada recebida. Tipo:", serverMessage.type, "Conteúdo:", serverMessage);
+        console.log("[Listener] Mensagem parseada recebida. Tipo:", serverMessage.type, "Conteúdo (primeiros 100 chars):", JSON.stringify(serverMessage).substring(0,100));
         
         if (serverMessage.type === "translated_text_for_listener" && serverMessage.text && serverMessage.targetLanguage) {
           const textToSpeak = serverMessage.text;
+          // Normalize by trimming leading/trailing whitespace for comparison
           const normalizedTextToSpeak = textToSpeak.trim();
           const normalizedLastEnqueuedText = lastSuccessfullyEnqueuedTextRef.current ? lastSuccessfullyEnqueuedTextRef.current.trim() : null;
 
@@ -219,20 +224,24 @@ export default function ListenerPage() {
           if (normalizedTextToSpeak && normalizedTextToSpeak === normalizedLastEnqueuedText) {
             console.log(`[Listener] Texto traduzido normalizado é o MESMO que o último enfileirado com sucesso. Ignorando para fala: "${normalizedTextToSpeak.substring(0,30)}..."`);
             setLastMessage(`Texto repetido ignorado: "${normalizedTextToSpeak.substring(0,20)}..." (${new Date().toLocaleTimeString()})`);
-            return; 
+            return; // Do not enqueue or speak
           }
           
           setLastMessage(`Texto traduzido recebido para ${serverMessage.targetLanguage}: "${textToSpeak.substring(0,30)}..." (${new Date().toLocaleTimeString()})`);
 
+          // Split into sentences to avoid very long utterances, if SpeechSynthesis supports it well.
+          // This can be improved with more robust sentence splitting if needed.
           const sentences = textToSpeak.match(/[^.!?]+(?:[.!?]+["']?|$)/g) || [];
-          if (sentences.length === 0 && textToSpeak.trim()) { sentences.push(textToSpeak.trim()); }
+          if (sentences.length === 0 && textToSpeak.trim()) { // If no sentences found but text exists, treat as one sentence
+            sentences.push(textToSpeak.trim());
+          }
           
           let utterancesAddedCount = 0;
           sentences.forEach(sentence => {
             const trimmedSentence = sentence.trim();
             if (trimmedSentence) {
               const utterance = new SpeechSynthesisUtterance(trimmedSentence);
-              utterance.lang = serverMessage.targetLanguage;
+              utterance.lang = serverMessage.targetLanguage; // Set language for TTS
               utteranceQueueRef.current.push(utterance);
               utterancesAddedCount++;
             }
@@ -240,12 +249,13 @@ export default function ListenerPage() {
 
           if (utterancesAddedCount > 0) {
             const previousRefValue = lastSuccessfullyEnqueuedTextRef.current;
-            lastSuccessfullyEnqueuedTextRef.current = textToSpeak; // Armazena o texto original completo que foi processado e enfileirado
+            lastSuccessfullyEnqueuedTextRef.current = textToSpeak; // Store the original full text that was processed
             console.log(`[Listener] ${utterancesAddedCount} utterance(s) adicionada(s) à fila. lastSuccessfullyEnqueuedTextRef ATUALIZADO de "${previousRefValue ? previousRefValue.substring(0,30) : 'null'}" para "${textToSpeak.substring(0, 50)}...". Tamanho total da fila: ${utteranceQueueRef.current.length}`);
             speakNextInQueueRef.current();
           } else {
              console.warn(`[Listener] Nenhuma utterance adicionada à fila para o texto: "${textToSpeak.substring(0, 50)}..." (Sentenças detectadas: ${sentences.length})`);
           }
+
         } else if (serverMessage.message) {
           setLastMessage(serverMessage.message);
         } else if (serverMessage.error) {
@@ -274,13 +284,17 @@ export default function ListenerPage() {
       if (ws.current !== newWs && ws.current !== null) { console.log(`[Listener] onclose: Conexão antiga (URL: ${newWs.url}, Código: ${event.code}). Ignorando.`); return; }
       console.log(`[Listener] WebSocket desconectado (URL: ${newWs.url}). Código: ${event.code}, Limpo: ${event.wasClean}, Razão: ${event.reason}`);
       setListenerState("disconnected");
-      if (event.code !== 1000) { setLastMessage("Desconectado. Tente recarregar a página."); } else { setLastMessage("Desconectado do servidor."); }
+      if (event.code !== 1000) { // 1000 is normal closure
+        setLastMessage("Desconectado. Tente recarregar a página.");
+      } else {
+        setLastMessage("Desconectado do servidor.");
+      }
       setIsSpeaking(false); setAudioActivated(false);
       console.log("[Listener] onclose: Resetando lastSuccessfullyEnqueuedTextRef.current para null.");
       lastSuccessfullyEnqueuedTextRef.current = null;
       if(typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
       utteranceQueueRef.current = [];
-      if (ws.current === newWs) ws.current = null;
+      if (ws.current === newWs) ws.current = null; // Clear the ref if it's this specific instance
     };
 
     return () => {
@@ -292,11 +306,12 @@ export default function ListenerPage() {
       if (ws.current === newWs) ws.current = null; 
       if(typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel();
       utteranceQueueRef.current = []; 
-      setIsSpeaking(false); 
+      setIsSpeaking(false); // Reset speaking state
       lastSuccessfullyEnqueuedTextRef.current = null;
       console.log("[Listener] Cleanup do useEffect principal finalizado. lastSuccessfullyEnqueuedTextRef.current é:", lastSuccessfullyEnqueuedTextRef.current);
     };
-  }, []); 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array to run once on mount and cleanup on unmount
 
   return (
     <div className="flex flex-col items-center min-h-screen p-4 md:p-8 bg-background text-foreground">
@@ -387,5 +402,3 @@ export default function ListenerPage() {
     </div>
   );
 }
-
-    

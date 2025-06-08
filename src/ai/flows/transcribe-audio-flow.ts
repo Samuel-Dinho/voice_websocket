@@ -2,7 +2,7 @@
 'use server';
 /**
  * @fileOverview This file defines a Genkit flow for transcribing audio.
- * It's currently set up to simulate a Whisper STT integration for testing purposes.
+ * It's currently set up to SIMULATE a Whisper STT integration for testing purposes.
  * For actual transcription, the commented-out sections for Whisper integration
  * need to be implemented, and Whisper (or a similar STT model) needs to be
  * available and callable from the server environment.
@@ -34,40 +34,51 @@ export type TranscribeAudioOutput = z.infer<
   typeof TranscribeAudioOutputSchema
 >;
 
+// This is the main function called by the WebSocket server.
 export async function transcribeAudio(
   input: TranscribeAudioInput
 ): Promise<TranscribeAudioOutput> {
   console.log(`[transcribeAudioFlow] Called with language: ${input.languageCode || 'not specified'}. Audio URI (first 60 chars): ${input.audioDataUri.substring(0, 60)}`);
-  try {
-    // This flow is now designed to simulate a call to a local/self-hosted Whisper model.
-    // The actual implementation of calling Whisper is outside the scope of Genkit's direct model calls here
-    // and would require server-side logic to:
-    // 1. Decode the audioDataUri from base64.
-    // 2. Save it as a temporary audio file (e.g., .wav, .webm) or prepare an audio buffer.
-    // 3. Invoke the Whisper model/library (e.g., via a Python script child_process, or a Node.js Whisper binding if available).
-    //    - Pass the audio file/buffer and potentially the languageCode as a hint.
-    // 4. Capture the transcribed text output from Whisper.
-    // 5. Handle any errors during this process.
+  
+  // Simulate Whisper STT integration
+  // In a real scenario, you would:
+  // 1. Decode input.audioDataUri (base64) to binary audio.
+  // 2. Save it as a temporary audio file (e.g., .wav, .webm) or prepare an audio buffer.
+  //    - Ensure the format is compatible with your Whisper setup. FFmpeg might be needed.
+  // 3. Invoke your Whisper model/library:
+  //    - This could be a local Python script called via child_process.
+  //    - Or a Node.js binding for Whisper if one exists and is suitable.
+  //    - Or a call to a separate microservice you've set up that hosts Whisper.
+  //    - Pass the audio file/buffer and potentially input.languageCode as a hint.
+  // 4. Capture the transcribed text output from Whisper.
+  // 5. Handle any errors during this process.
 
+  try {
     // FOR TESTING PURPOSES, WE'LL RETURN A FIXED SIMULATED WHISPER TRANSCRIPTION:
     const simulatedWhisperText = `[Simulated Whisper STT for ${input.languageCode || 'audio'}]: Este é um teste. O áudio da aba foi "processado" pelo Whisper.`;
+    
     console.log(`[transcribeAudioFlow] Simulated Whisper STT successful. Result: "${simulatedWhisperText.substring(0,100)}..."`);
     
     if (!simulatedWhisperText || simulatedWhisperText.trim() === "") {
         console.warn("[transcribeAudioFlow] Simulated Whisper STT result was empty.");
+        // Even if empty, return it so the server can decide not to translate an empty string.
         return { transcribedText: `[Simulação Whisper: Transcrição resultou em texto vazio para ${input.languageCode || 'áudio fornecido'}]` };
     }
+    
     return { transcribedText: simulatedWhisperText };
 
   } catch (error: any) {
     console.error('[transcribeAudioFlow] Error during simulated Whisper STT attempt:', error.message || error, error.cause || error.stack);
     const errorMessage = error.cause?.message || error.message || 'Erro desconhecido na simulação de transcrição Whisper';
+    // Return an error-like placeholder if the simulation itself fails (though unlikely with current fixed text)
     return { transcribedText: `[Simulação Whisper falhou: ${errorMessage}]` };
   }
 }
 
-// Note: ai.defineFlow and ai.definePrompt are removed from this version as we are simulating an external STT call.
-// If Genkit ever supports Whisper or other local STT models directly as a plugin, this structure would change.
+// Note: ai.defineFlow and ai.definePrompt are not used in this version as we are
+// directly implementing the simulation logic in the exported `transcribeAudio` function.
+// If integrating a Genkit-compatible STT model plugin in the future,
+// you would likely reintroduce defineFlow and definePrompt here.
 
-// Export ai and z for use in other flows if necessary (though 'ai' is not used in this file directly anymore)
+// Export z for use in other flows if necessary (though 'ai' is not used in this file directly anymore)
 export {ai as genkitAI, z as zod};
