@@ -23,6 +23,15 @@ import whisper
 # - Se erro -> A mensagem de erro é impressa na saída de erro (stderr).
 
 if __name__ == "__main__":
+    # Força a saída padrão para UTF-8 para lidar com caracteres especiais
+    if sys.stdout.encoding != 'utf-8':
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        except Exception as e:
+            print(f"Warning: Could not reconfigure stdout/stderr to UTF-8: {e}", file=sys.stderr)
+
+
     # Validação dos argumentos
     if len(sys.argv) < 2:
         print("Erro: Forneça pelo menos o caminho do arquivo de áudio.", file=sys.stderr)
@@ -34,10 +43,12 @@ if __name__ == "__main__":
 
     try:
         if not os.path.exists(audio_file):
-            print(f"Erro: Arquivo não encontrado em '{audio_file}'", file=sys.stderr)
+            print(f"Erro: Arquivo de áudio não encontrado em '{os.path.abspath(audio_file)}'", file=sys.stderr)
             sys.exit(1)
         
         # Carrega o modelo (pode baixar na primeira vez)
+        # Modelos podem ser: "tiny", "base", "small", "medium", "large", "large-v2", "large-v3"
+        # Modelos menores são mais rápidos mas menos precisos.
         model = whisper.load_model(model_size)
 
         options = {}
