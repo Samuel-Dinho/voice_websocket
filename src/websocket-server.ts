@@ -15,6 +15,14 @@ console.log(`[WebSocketServer] Iniciado em ws://localhost:${PORT}`);
 
 const audioSubscribers = new Set<WebSocket>();
 
+// Cache para evitar re-processamento do mesmo texto simulado
+let lastProcessedInfo: {
+  originalText: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  translatedText: string;
+} | null = null;
+
 wss.on('connection', (ws: WebSocket) => {
   console.log('[WebSocketServer] Cliente conectado');
 
@@ -23,7 +31,6 @@ wss.on('connection', (ws: WebSocket) => {
     try {
       const dataString = message.toString();
       parsedData = JSON.parse(dataString);
-      // console.log('[WebSocketServer] Mensagem recebida:', {action: parsedData.action, mode: parsedData.audioSourceMode, textLen: parsedData.transcribedText?.length, audioUriLen: parsedData.audioDataUri?.length});
     } catch (e) {
       console.warn(`[WebSocketServer] Falha ao parsear JSON: "${message.toString().substring(0,100)}..."`, e);
       if (ws.readyState === WebSocket.OPEN) {
@@ -38,74 +45,107 @@ wss.on('connection', (ws: WebSocket) => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ message: 'Inscrito para receber áudio traduzido.' }));
       }
+      // Enviar a última tradução conhecida (se houver) para o novo assinante
+      if (lastProcessedInfo && lastProcessedInfo.translatedText) {
+        console.log(`[WebSocketServer] Enviando última tradução conhecida para novo assinante: "${lastProcessedInfo.translatedText.substring(0,30)}..."`);
+        if (ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({
+              type: 'translated_text_for_listener',
+              text: lastProcessedInfo.translatedText,
+              targetLanguage: lastProcessedInfo.targetLanguage
+            }));
+          } catch (sendError) {
+            console.error('[WebSocketServer] Erro ao enviar última tradução para novo assinante:', sendError);
+          }
+        }
+      }
     } else if (parsedData.action === 'process_speech' && parsedData.sourceLanguage && parsedData.targetLanguage) {
       
       let textToTranslate = parsedData.transcribedText;
+      const currentSourceLanguage = parsedData.sourceLanguage;
+      const currentTargetLanguage = parsedData.targetLanguage;
       let transcriptionSource = parsedData.audioSourceMode === "microphone" ? "Microphone (Client)" : "System Audio (Server STT)";
       let sttErrorOccurred = false;
 
       try {
         if (parsedData.audioSourceMode === "system" && parsedData.audioDataUri) {
-          // console.log(`[WebSocketServer] Modo Sistema: Tentando transcrever áudio da tela/aba. URI (primeiros 60): ${parsedData.audioDataUri.substring(0,60)}`);
           const transcriptionInput: TranscribeAudioInput = {
             audioDataUri: parsedData.audioDataUri,
-            languageCode: parsedData.sourceLanguage,
+            languageCode: currentSourceLanguage,
           };
           const transcriptionOutput = await transcribeAudio(transcriptionInput);
           textToTranslate = transcriptionOutput.transcribedText;
-          if (textToTranslate.startsWith("[") && textToTranslate.endsWith("]")) { // Verifica se é um placeholder de erro/vazio do STT
+          if (!textToTranslate || textToTranslate.startsWith("[Simulação Whisper falhou:") || textToTranslate.startsWith("[Simulação Whisper: Transcrição resultou em texto vazio")) {
             sttErrorOccurred = true;
           }
-          // console.log(`[WebSocketServer] Texto transcrito (do áudio da tela/aba): "${textToTranslate ? textToTranslate.substring(0,50) : 'Falha na transcrição ou áudio vazio'}"`);
         } else if (parsedData.audioSourceMode === "microphone") {
            if (!textToTranslate) {
             console.warn('[WebSocketServer] Modo Microfone, mas texto transcrito está vazio. Não prosseguindo com tradução.');
              if (ws.readyState === WebSocket.OPEN) {
-              // Enviar feedback ao cliente original que o texto do microfone estava vazio
               ws.send(JSON.stringify({ originalTextForDebug: "", translationError: 'Texto transcrito do microfone estava vazio. Nenhuma tradução solicitada.' }));
              }
              return;
            }
-           // console.log(`[WebSocketServer] Modo Microfone: Usando texto transcrito do cliente: "${textToTranslate.substring(0,50)}"`);
         }
 
-
         if (!textToTranslate || textToTranslate.trim() === "" || sttErrorOccurred) {
-            const reason = !textToTranslate || textToTranslate.trim() === "" ? "Texto vazio ou nulo" : textToTranslate;
+            const reason = sttErrorOccurred ? textToTranslate : "Texto vazio ou nulo";
             console.warn(`[WebSocketServer] Texto para tradução está '${reason}' após tentativa de transcrição (fonte: ${transcriptionSource}). Não prosseguindo com tradução.`);
-            
             if (ws.readyState === WebSocket.OPEN) {
-                // Enviar feedback ao cliente original sobre o estado da transcrição
                 ws.send(JSON.stringify({ 
-                    originalTextForDebug: textToTranslate, // pode ser o texto do erro STT ou vazio
+                    originalTextForDebug: textToTranslate,
                     translationError: `Tradução não solicitada: ${reason}` 
                 }));
             }
             return; 
         }
         
-        // console.log(`[WebSocketServer] Preparando para traduzir texto (fonte: ${transcriptionSource}): "${textToTranslate.substring(0,30)}..."`);
+        // Verificar cache ANTES de traduzir
+        if (
+          lastProcessedInfo &&
+          lastProcessedInfo.originalText === textToTranslate &&
+          lastProcessedInfo.sourceLanguage === currentSourceLanguage &&
+          lastProcessedInfo.targetLanguage === currentTargetLanguage
+        ) {
+          console.log(`[WebSocketServer] Cache hit. Texto original ("${textToTranslate.substring(0,30)}...") e idiomas são os mesmos. Reenviando tradução anterior.`);
+          if (ws.readyState === WebSocket.OPEN) { 
+            ws.send(JSON.stringify({ translatedText: lastProcessedInfo.translatedText, originalTextForDebug: textToTranslate.substring(0, 100) }));
+          }
+          // Os listeners já devem ter a última tradução ou a receberão se se inscreverem.
+          // Não precisa reenviar para todos os listeners aqui, pois a lógica de "subscribe_audio" já cuida disso.
+          return; 
+        }
+
+        console.log(`[WebSocketServer] Preparando para traduzir texto (fonte: ${transcriptionSource}): "${textToTranslate.substring(0,30)}..."`);
         const translationInput: ImproveTranslationAccuracyInput = {
           text: textToTranslate,
-          sourceLanguage: parsedData.sourceLanguage,
-          targetLanguage: parsedData.targetLanguage,
+          sourceLanguage: currentSourceLanguage,
+          targetLanguage: currentTargetLanguage,
         };
         const translationOutput = await improveTranslationAccuracy(translationInput);
         
+        // Atualizar cache
+        lastProcessedInfo = {
+          originalText: textToTranslate,
+          sourceLanguage: currentSourceLanguage,
+          targetLanguage: currentTargetLanguage,
+          translatedText: translationOutput.translatedText,
+        };
+
         if (ws.readyState === WebSocket.OPEN) { 
           ws.send(JSON.stringify({ translatedText: translationOutput.translatedText, originalTextForDebug: textToTranslate.substring(0, 100) }));
-          // console.log(`[WebSocketServer] Tradução enviada para o cliente original: "${translationOutput.translatedText.substring(0,30)}..." (Original: "${textToTranslate.substring(0,30)}...")`);
         }
 
         if (translationOutput.translatedText) {
-          // console.log(`[WebSocketServer] Enviando texto traduzido "${translationOutput.translatedText.substring(0,30)}..." para ${audioSubscribers.size} ouvintes.`);
+          console.log(`[WebSocketServer] Enviando texto traduzido "${translationOutput.translatedText.substring(0,30)}..." para ${audioSubscribers.size} ouvintes.`);
           audioSubscribers.forEach(subscriber => {
             if (subscriber.readyState === WebSocket.OPEN) {
               try {
                 subscriber.send(JSON.stringify({ 
                   type: 'translated_text_for_listener', 
                   text: translationOutput.translatedText,
-                  targetLanguage: parsedData.targetLanguage 
+                  targetLanguage: currentTargetLanguage 
                 }));
               } catch (sendError) {
                 console.error('[WebSocketServer] Erro ao enviar translated_text_for_listener para assinante:', sendError);
@@ -122,6 +162,7 @@ wss.on('connection', (ws: WebSocket) => {
         } else if(error.message){
             errorMessage = `Erro na API GenAI: ${error.message}`;
         }
+        lastProcessedInfo = null; // Limpar cache em caso de erro
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ error: errorMessage, originalTextForDebug: textToTranslate?.substring(0,100) || "[Texto para tradução não disponível no erro]" }));
         }
@@ -145,7 +186,6 @@ wss.on('connection', (ws: WebSocket) => {
 
   ws.on('error', (error: Error) => {
     console.error('[WebSocketServer] Erro na conexão WebSocket individual do cliente:', error.message, error);
-    // Não tente enviar mensagem de erro aqui, pois a conexão pode já estar quebrada.
   });
 
   try {
@@ -161,4 +201,6 @@ wss.on('connection', (ws: WebSocket) => {
 wss.on('error', (error: Error) => {
   console.error('[WebSocketServer] Erro no servidor WebSocket geral:', error.message, error);
 });
+    
+
     
