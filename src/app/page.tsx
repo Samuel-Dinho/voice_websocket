@@ -19,38 +19,39 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 type StreamingState = "idle" | "recognizing" | "error" | "stopping";
 type AudioInputMode = "microphone" | "system";
 
-const MEDIA_RECORDER_TIMESLICE_MS = 1000; // How often MediaRecorder provides a chunk
+const MEDIA_RECORDER_TIMESLICE_MS = 1000; // How often MediaRecorder provides a chunk for system audio
 
 export default function LinguaVoxPage() {
   const ws = useRef<WebSocket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  // audioChunksRef is not strictly needed for real-time sending of individual chunks in system mode anymore,
-  // but MediaRecorder API might still use it or it could be useful if we re-introduce client-side buffering later.
   const audioChunksRef = useRef<Blob[]>([]);
-  const systemAudioStreamRef = useRef<MediaStream | null>(null);
+  const systemAudioStreamRef = useRef<MediaStream | null>(null); // To hold system audio stream
   const { toast } = useToast();
 
   const [sourceLanguage, setSourceLanguage] = useState<string>("pt");
   const [targetLanguage, setTargetLanguage] = useState<string>("en");
 
   const [streamingState, setStreamingState] = useState<StreamingState>("idle");
-  const streamingStateRef = useRef<StreamingState>(streamingState);
+  const streamingStateRef = useRef<StreamingState>(streamingState); // Ref to get current state in callbacks
+
   useEffect(() => {
     streamingStateRef.current = streamingState;
   }, [streamingState]);
 
+
   const [audioInputMode, setAudioInputMode] = useState<AudioInputMode>("microphone");
-  const audioInputModeRef = useRef(audioInputMode);
+  const audioInputModeRef = useRef(audioInputMode); // Ref for current audio input mode
   useEffect(() => {
     audioInputModeRef.current = audioInputMode;
   }, [audioInputMode]);
 
 
-  const [transcribedText, setTranscribedText] = useState<string>(""); // Might show server-side transcription later
+  const [transcribedText, setTranscribedText] = useState<string>("");
   const [translatedText, setTranslatedText] = useState<string>("");
-  const [isProcessingServer, setIsProcessingServer] = useState<boolean>(false); // For server STT/translation
+  const [isProcessingServer, setIsProcessingServer] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [supportedMimeType, setSupportedMimeType] = useState<string | null>(null);
+
 
   const getWebSocketUrl = () => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -77,14 +78,13 @@ export default function LinguaVoxPage() {
     ws.current.onopen = () => {
       console.log("[Client] WebSocket connected (client-side)");
       setError(null);
-      // If we were in a recognizing state and WS reconnected, maybe resend start_transcription_stream
-      if (streamingStateRef.current === "recognizing") {
+      if (streamingStateRef.current === "recognizing" && ws.current && ws.current.readyState === WebSocket.OPEN) {
         console.log("[Client] WS reconnected while recognizing, resending start_transcription_stream command.");
         ws.current?.send(JSON.stringify({
           action: 'start_transcription_stream',
           language: sourceLanguage,
           targetLanguage: targetLanguage,
-          model: 'base' // Or derive this from UI if you add model selection
+          model: 'base'
         }));
       }
     };
@@ -96,7 +96,7 @@ export default function LinguaVoxPage() {
 
         if (serverMessage.type === "translated_text_for_listener") {
           setTranslatedText(prev => prev ? prev.trim() + " " + serverMessage.text.trim() : serverMessage.text.trim());
-          setIsProcessingServer(false); // Assuming processing ends when translation is received
+          setIsProcessingServer(false);
         } else if (serverMessage.error) {
           console.error("[Client] Server WebSocket error:", serverMessage.error);
           setError(`Server error: ${serverMessage.error}`);
@@ -104,14 +104,9 @@ export default function LinguaVoxPage() {
           setIsProcessingServer(false);
         } else if (serverMessage.message) {
           console.log("[Client] Informational message from server:", serverMessage.message);
-           if (serverMessage.message.includes("Conectado com sucesso")) {
-            // Successfully connected
-           }
         }
       } catch (e) {
         console.error("[Client] Error processing server message:", e, "Raw data:", event.data);
-        // It's possible this is not JSON if server sends other types of messages.
-        // For now, assume all important messages are JSON.
       }
     };
 
@@ -120,7 +115,6 @@ export default function LinguaVoxPage() {
       setError("WebSocket connection failed. Check console.");
       setIsProcessingServer(false);
       if(streamingStateRef.current !== "error") setStreamingState("error");
-      // Don't show toast if it's a "normal" closure during page unload or explicit stop
       if (ws.current && ws.current.readyState !== WebSocket.CLOSING && ws.current.readyState !== WebSocket.CLOSED) {
         toast({ title: "Connection Error", description: "Could not connect to WebSocket server.", variant: "destructive" });
       }
@@ -128,20 +122,19 @@ export default function LinguaVoxPage() {
 
     ws.current.onclose = (event) => {
       console.log(`[Client] WebSocket disconnected (client-side). Code: ${event.code}, Reason: "${event.reason}", Clean: ${event.wasClean}.`);
-      // Check if this ws instance is the current one to avoid issues with stale onclose handlers
       if (ws.current && ws.current === event.target) {
          ws.current = null;
       }
-      if (streamingStateRef.current !== "idle" && streamingStateRef.current !== "error" && event.code !== 1000 /* Normal closure */) {
+      if (streamingStateRef.current !== "idle" && streamingStateRef.current !== "error" && event.code !== 1000) {
         setError("WebSocket connection lost. Try restarting transcription.");
-        if (!event.wasClean) { // Only toast if not a clean closure
+        if (!event.wasClean) {
             toast({ title: "Connection Lost", description: "Connection to the server was interrupted.", variant: "destructive" });
         }
         if(streamingStateRef.current !== "error") setStreamingState("error");
       }
       setIsProcessingServer(false);
     };
-  }, [sourceLanguage, targetLanguage, toast]); // Added sourceLanguage, targetLanguage for resend on reconnect
+  }, [sourceLanguage, targetLanguage, toast]);
 
 
   useEffect(() => {
@@ -165,7 +158,7 @@ export default function LinguaVoxPage() {
     connectWebSocket();
 
     return () => {
-      stopInternals(true); // Ensure resources are cleaned up
+      stopInternals(true);
       if (ws.current && ws.current.readyState === WebSocket.OPEN) {
         console.log("[Client] Closing WebSocket on component unmount...");
         ws.current.send(JSON.stringify({ action: 'stop_transcription_stream' }));
@@ -174,13 +167,15 @@ export default function LinguaVoxPage() {
       ws.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectWebSocket]); // connectWebSocket is stable due to useCallback
+  }, [connectWebSocket]);
 
   const startMediaRecorder = useCallback(async (): Promise<boolean> => {
     console.log("[Client] Initiating startMediaRecorder");
     if (!supportedMimeType) {
       setError("Audio format not supported for recording.");
       toast({ title: "Recording Error", description: "Audio format not supported.", variant: "destructive" });
+      setStreamingState("error");
+      setIsProcessingServer(false);
       return false;
     }
 
@@ -209,26 +204,28 @@ export default function LinguaVoxPage() {
                 systemAudioStreamRef.current = null;
             }
             const displayStream = await navigator.mediaDevices.getDisplayMedia({
-              video: true,
+              video: true, // Often required to get system audio, even if video is discarded
               audio: {
                 // @ts-ignore - suppressLocalAudioPlayback might not be in all TS defs
-                suppressLocalAudioPlayback: false
+                suppressLocalAudioPlayback: false // Important for user experience
               },
             });
             const audioTracks = displayStream.getAudioTracks();
             if (audioTracks.length > 0) {
-                stream = new MediaStream(audioTracks);
-                displayStream.getVideoTracks().forEach(track => track.stop());
-                systemAudioStreamRef.current = displayStream; // Store the original displayStream to manage its tracks later
+                stream = new MediaStream(audioTracks); // Create a new stream with only audio tracks
+                displayStream.getVideoTracks().forEach(track => track.stop()); // Stop video tracks if not needed
+                systemAudioStreamRef.current = displayStream; // Store original to manage tracks on stop
             } else {
                 setError("No audio track found in the selected screen/tab source. Ensure audio sharing is enabled and audio is playing.");
                 toast({ title: "Audio Capture Error", description: "Selected source provided no audio or sharing was not permitted.", variant: "destructive" });
                 displayStream.getTracks().forEach(track => track.stop());
+                setStreamingState("error");
+                setIsProcessingServer(false);
                 return false;
             }
         }
       } else { // Microphone mode
-        if (systemAudioStreamRef.current) {
+        if (systemAudioStreamRef.current) { // Clean up system stream if switching modes
             systemAudioStreamRef.current.getTracks().forEach(track => track.stop());
             systemAudioStreamRef.current = null;
         }
@@ -240,8 +237,7 @@ export default function LinguaVoxPage() {
 
       mediaRecorderRef.current.ondataavailable = (event: BlobEvent) => {
         if (event.data.size > 0 && ws.current && ws.current.readyState === WebSocket.OPEN) {
-          // console.log(`[Client] MR.ondataavailable: sending chunk. Size: ${event.data.size}, Mode: ${audioInputModeRef.current}`);
-          ws.current.send(event.data); // Send raw audio blob directly
+          ws.current.send(event.data);
         } else if (event.data.size > 0) {
           console.warn("[Client] MR.ondataavailable: WebSocket not open or null. Cannot send audio chunk.");
         }
@@ -252,13 +248,11 @@ export default function LinguaVoxPage() {
         if (mediaRecorderRef.current?.stream) {
             mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
         }
-        // For system audio, ensure the original display media stream tracks are also stopped.
         if (audioInputModeRef.current === "system" && systemAudioStreamRef.current) {
            console.log("[Client] MR.onstop (system): Stopping tracks of systemAudioStreamRef.");
            systemAudioStreamRef.current.getTracks().forEach(track => track.stop());
            systemAudioStreamRef.current = null;
         }
-        // No need to send final chunk here as stop_transcription_stream message handles server-side cleanup
       };
 
       mediaRecorderRef.current.start(MEDIA_RECORDER_TIMESLICE_MS);
@@ -277,7 +271,9 @@ export default function LinguaVoxPage() {
       }
       setError(userMessage);
       toast({ title: "Capture Error", description: userMessage, variant: "destructive" });
-      if(streamingStateRef.current !== "error" && err.name !== "AbortError") setStreamingState("error");
+      
+      setStreamingState("error");
+      setIsProcessingServer(false);
 
       if (systemAudioStreamRef.current && audioInputModeRef.current === "system") {
         systemAudioStreamRef.current.getTracks().forEach(track => track.stop());
@@ -287,33 +283,35 @@ export default function LinguaVoxPage() {
     }
   }, [supportedMimeType, toast]);
 
+
   const stopInternals = useCallback((isUnmounting = false) => {
     console.log("[Client] Calling stopInternals.", { isUnmounting, currentState: streamingStateRef.current });
 
     if (mediaRecorderRef.current) {
       console.log("[Client] MR: Cleaning up handlers and stopping in stopInternals. Current state:", mediaRecorderRef.current.state);
       mediaRecorderRef.current.ondataavailable = null;
-      // mediaRecorderRef.current.onstop is left to handle stream track stopping naturally or by specific logic.
-
+      
       if (mediaRecorderRef.current.state === "recording") {
         try { mediaRecorderRef.current.stop(); } catch (e) { console.warn("Error stopping MR in stopInternals (recording)", e);}
       }
-      // Stream tracks are stopped by MR.onstop or if systemAudioStreamRef is manually cleared
+      // mediaRecorderRef.current.onstop will handle track stopping for its own stream.
       mediaRecorderRef.current = null;
     }
     
-    if (audioInputModeRef.current === "system" && systemAudioStreamRef.current && !isUnmounting) {
-        console.log("[Client] stopInternals: Explicitly stopping systemAudioStreamRef tracks (not unmounting).");
+    // Explicitly stop system audio stream tracks if it exists and we are not just unmounting
+    // (as onstop might not always fire if the page is quickly closed/refreshed).
+    if (audioInputModeRef.current === "system" && systemAudioStreamRef.current) {
+        console.log(`[Client] stopInternals: Explicitly stopping systemAudioStreamRef tracks (isUnmounting: ${isUnmounting}).`);
         systemAudioStreamRef.current.getTracks().forEach(track => track.stop());
         systemAudioStreamRef.current = null;
     }
 
-
     audioChunksRef.current = [];
 
+    // Only change state if not unmounting and not already idle/error.
+    // The caller (stopTranscriptionCycle) will set the final state.
     if (!isUnmounting && streamingStateRef.current !== "idle" && streamingStateRef.current !== "error") {
-      setStreamingState("idle");
-      console.log("[Client] stopInternals: State set to idle.");
+      // Caller will set state to idle or error.
     }
   }, []);
 
@@ -321,49 +319,63 @@ export default function LinguaVoxPage() {
   const startTranscriptionCycle = useCallback(async () => {
     console.log(`[Client] Attempting to start transcription cycle. Current state: ${streamingStateRef.current} Source Lang: ${sourceLanguage}, Target Lang: ${targetLanguage}, Audio Mode: ${audioInputModeRef.current}`);
 
-    setStreamingState("recognizing");
-    setIsProcessingServer(true); // Indicate server processing will start
+    if (!supportedMimeType) { 
+      setError("Audio format not supported"); 
+      setStreamingState("error"); 
+      setIsProcessingServer(false); 
+      return; 
+    }
+    if (error) setError(null); // Clear previous errors
 
-    if (!supportedMimeType) { setError("Audio format not supported"); setStreamingState("error"); setIsProcessingServer(false); return; }
+    // Attempt to start media recorder first.
+    const mediaRecorderStarted = await startMediaRecorder();
+    if (!mediaRecorderStarted) {
+      // Error already handled and states set by startMediaRecorder
+      return;
+    }
+
+    // Media recorder started successfully, now proceed with WebSocket and state updates.
+    setStreamingState("recognizing");
+    setIsProcessingServer(true);
+
 
     if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
         console.log("[Client] WebSocket not connected in startTranscriptionCycle. Attempting reconnect...");
-        connectWebSocket(); // connectWebSocket will attempt to resend start command if state is 'recognizing'
-        // We wait for onopen to handle the start_transcription_stream or error out
-        // For now, we can show a loading state to the user.
-        toast({ title: "Connecting...", description: "Attempting to connect to the server."});
-        // No immediate return, let onopen handle it or timeout.
-        // If connection fails, connectWebSocket's onerror/onclose will set error state.
-        return; // Early return to avoid starting MediaRecorder if WS is not ready.
-                 // Actual start of MediaRecorder and sending command should happen after successful (re)connection.
+        connectWebSocket(); 
+        // Set a timeout to check connection and send start command
+        setTimeout(() => {
+            if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+                console.log("[Client] WS connected after delay, sending start_transcription_stream.");
+                ws.current.send(JSON.stringify({
+                  action: 'start_transcription_stream',
+                  language: sourceLanguage,
+                  targetLanguage: targetLanguage,
+                  model: 'base'
+                }));
+                toast({ title: audioInputModeRef.current === "microphone" ? "Microphone Activated" : "Screen/Tab Capture Activated", description: `Streaming audio (mode: ${audioInputModeRef.current})...` });
+            } else {
+                setError("Failed to connect to WebSocket after starting media. Stopping transcription.");
+                toast({ title: "Connection Failed", description: "Could not connect to the server.", variant: "destructive"});
+                stopInternals(); // Clean up media
+                setStreamingState("error");
+                setIsProcessingServer(false);
+            }
+        }, 1500); // Wait for connection
+        return;
     }
-
-    if (error) setError(null);
-
-    // Send start command to server
+    
     console.log("[Client] Sending start_transcription_stream to server.");
     ws.current.send(JSON.stringify({
       action: 'start_transcription_stream',
       language: sourceLanguage,
       targetLanguage: targetLanguage,
-      model: 'base' // Or make this configurable
+      model: 'base'
     }));
 
-    const mediaRecorderStarted = await startMediaRecorder();
-    if (!mediaRecorderStarted) {
-      // Error already handled by startMediaRecorder
-      if (streamingStateRef.current !== "error") setStreamingState("error");
-      setIsProcessingServer(false);
-      // Send stop command if MR failed to start after sending start command
-      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify({ action: 'stop_transcription_stream'}));
-      }
-      return;
-    }
-
-    if (streamingStateRef.current === "recognizing" && !error) {
+    if (streamingStateRef.current === "recognizing" && !error) { // Check error state again
       toast({ title: audioInputModeRef.current === "microphone" ? "Microphone Activated" : "Screen/Tab Capture Activated", description: `Streaming audio (mode: ${audioInputModeRef.current})...` });
     }
+
   }, [supportedMimeType, sourceLanguage, targetLanguage, connectWebSocket, toast, startMediaRecorder, error]);
 
 
@@ -371,7 +383,7 @@ export default function LinguaVoxPage() {
     console.log("[Client] Attempting to stop transcription cycle (stopTranscriptionCycle)... Current state (ref):", streamingStateRef.current);
     if (streamingStateRef.current === "idle" || streamingStateRef.current === "error") {
         console.log("[Client] Already idle or in error.");
-        if(error && streamingStateRef.current === "idle") setError(null);
+        if(error && streamingStateRef.current === "idle") setError(null); // Clear error if now idle
         setIsProcessingServer(false);
         return;
     }
@@ -380,24 +392,11 @@ export default function LinguaVoxPage() {
         return;
     }
 
-    setStreamingState("stopping");
-    setIsProcessingServer(false); // Stop showing server processing indicator
+    setStreamingState("stopping"); // Indicate stopping process
 
-    // Stop MediaRecorder first to cease sending audio chunks
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      try {
-        mediaRecorderRef.current.stop(); // This will trigger its onstop handler for track cleanup
-      } catch (e) {
-        console.warn("Error stopping MediaRecorder during manual stop:", e);
-      }
-    }
-     // Ensure system audio stream tracks are stopped if MR didn't handle it or was already stopped
-    if (audioInputModeRef.current === "system" && systemAudioStreamRef.current) {
-      console.log("[Client] stopTranscriptionCycle: Explicitly stopping systemAudioStreamRef tracks.");
-      systemAudioStreamRef.current.getTracks().forEach(track => track.stop());
-      systemAudioStreamRef.current = null;
-    }
-
+    // Stop MediaRecorder first
+    // stopInternals will handle actual MR.stop() and track cleanup
+    stopInternals(); 
 
     // Send stop command to server
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
@@ -407,12 +406,12 @@ export default function LinguaVoxPage() {
       console.warn("[Client] WebSocket not open. Cannot send stop_transcription_stream.");
     }
     
-    // Call general cleanup for client-side resources, then set state to idle.
-    // The actual MediaRecorder instance (mediaRecorderRef.current) will be cleared in stopInternals.
-    stopInternals(); // Cleans up refs, timers etc.
+    // Final state updates
+    setIsProcessingServer(false);
     setStreamingState("idle");
+    toast({title: "Transcription Stopped"});
 
-  }, [stopInternals, error]);
+  }, [stopInternals, error, toast]); // Added toast
 
 
   const handleToggleStreaming = () => {
@@ -420,31 +419,13 @@ export default function LinguaVoxPage() {
     if (streamingStateRef.current === "recognizing") {
       stopTranscriptionCycle();
     } else if (streamingStateRef.current === "idle" || streamingStateRef.current === "error") {
-      if(error && streamingStateRef.current !== "error") setError(null);
+      // Clear previous data and errors before starting
+      if(error) setError(null);
       setTranscribedText("");
       setTranslatedText("");
-      audioChunksRef.current = [];
+      audioChunksRef.current = []; // Ensure chunks are cleared
 
-      // Ensure WebSocket is connected before starting
-      if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
-        console.log("[Client] WebSocket not connected. Attempting to connect before starting...");
-        toast({ title: "Connecting...", description: "Please wait while connecting to the server." });
-        connectWebSocket(); // This will trigger onopen, which can then call startTranscriptionCycle
-                            // OR, if already trying to connect, onopen will eventually fire.
-        // Set a timeout to check if connection was successful, then start
-        setTimeout(() => {
-            if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-                startTranscriptionCycle();
-            } else {
-                setError("Failed to connect to WebSocket. Cannot start transcription.");
-                toast({ title: "Connection Failed", description: "Could not connect to the server to start.", variant: "destructive"});
-                if (streamingStateRef.current !== 'error') setStreamingState("error");
-                setIsProcessingServer(false);
-            }
-        }, 1500); // Wait 1.5 seconds for connection attempt
-      } else {
-        startTranscriptionCycle();
-      }
+      startTranscriptionCycle(); // This will handle WS connection checks internally
     } else if (streamingStateRef.current === "stopping"){
         console.log("[Client] Currently stopping, please wait.");
         toast({title: "Please Wait", description: "Finalizing current recording..."})
@@ -458,7 +439,7 @@ export default function LinguaVoxPage() {
   if (streamingState === "stopping") streamButtonText = "Stopping...";
 
   const isButtonDisabled = streamingState === "stopping" || (!supportedMimeType && streamingState !== "error" && streamingState !== "idle");
-  const isLoading = streamingState === "stopping" || isProcessingServer;
+  const isLoading = streamingState === "stopping" || (streamingState === "recognizing" && isProcessingServer);
 
 
   const languageSelectorItems = supportedLanguages.map(lang => ({
@@ -493,9 +474,9 @@ export default function LinguaVoxPage() {
               Select languages and audio source.
               <br/>
               <span className="text-xs text-muted-foreground">
-                <strong>Microphone Mode:</strong> Streams microphone audio for server-side STT (Whisper) & translation.
+                <strong>Microphone Mode:</strong> Streams microphone audio for server-side STT & translation.
                 <br />
-                <strong>Screen/Tab Mode:</strong> Streams screen/tab audio for server-side STT (Whisper) & translation.
+                <strong>Screen/Tab Mode:</strong> Streams screen/tab audio for server-side STT & translation.
                 <strong className="text-primary"> When using "Screen/Tab", ensure "Share tab audio" or "Share system audio" is checked in the browser dialog.</strong> To change source, stop and restart.
               </span>
             </CardDescription>
@@ -519,7 +500,7 @@ export default function LinguaVoxPage() {
                 label="Target Language (Translation)"
                 value={targetLanguage}
                 onValueChange={(value) => {
-                    setTargetLanguage(value);
+                    setTargetLanguage(value); // Allow changing target language even while streaming
                 }}
                 languages={languageSelectorItems}
                 disabled={streamingState === "recognizing" || streamingState === "stopping"}
@@ -562,7 +543,7 @@ export default function LinguaVoxPage() {
                 className="w-full md:w-auto px-8 py-6 text-lg transition-all duration-300 ease-in-out transform hover:scale-105"
                 variant={streamingState === "recognizing" ? "destructive" : "default"}
               >
-                {isLoading ? (
+                {isLoading || streamingState === "stopping" ? ( // Consolidated loading check
                   <Loader2 className="mr-2 h-6 w-6 animate-spin" />
                 ) : (
                   <StreamButtonIcon className="mr-2 h-6 w-6" />
@@ -576,7 +557,7 @@ export default function LinguaVoxPage() {
                   {(streamingState === "recognizing") && !isProcessingServer && (
                     <p className="text-primary animate-pulse">Streaming audio to server...</p>
                   )}
-                  {isProcessingServer && (
+                  {isProcessingServer && streamingState === "recognizing" && ( // Show "Server processing" only when recognizing
                     <p className="text-accent animate-pulse">Server processing audio...</p>
                   )}
               </div>
@@ -596,7 +577,7 @@ export default function LinguaVoxPage() {
                   Transcription (from Server):
                 </h3>
                 <Textarea
-                  value={transcribedText} // This will be updated if server sends back transcriptions
+                  value={transcribedText}
                   readOnly
                   rows={8}
                   className="bg-muted/50 border-border text-lg p-4 rounded-md shadow-inner"
@@ -617,7 +598,7 @@ export default function LinguaVoxPage() {
                   rows={8}
                   className="bg-muted/50 border-border text-lg p-4 rounded-md shadow-inner"
                   aria-label="Translated text"
-                  placeholder={isProcessingServer ? "Server translating..." : "Translation will appear here..."}
+                  placeholder={isProcessingServer && streamingState === "recognizing" ? "Server translating..." : "Translation will appear here..."}
                 />
               </div>
             </div>
