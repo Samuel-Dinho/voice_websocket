@@ -62,12 +62,13 @@ export default function LinguaVoxPage() {
         const WS_URL = getWebSocketUrl();
         console.log("[Client] Attempting to connect to WebSocket at:", WS_URL);
 
+        // Clean up any existing WebSocket instance thoroughly before creating a new one.
         if (ws.current) {
             console.warn("[Client] Previous WebSocket instance found. Cleaning it up before reconnecting.", {readyState: ws.current.readyState});
             ws.current.onopen = null;
             ws.current.onmessage = null;
             ws.current.onerror = null;
-            ws.current.onclose = null;
+            ws.current.onclose = null; // Ensure onclose is nulled to prevent its logic from firing during cleanup
             if (ws.current.readyState !== WebSocket.CLOSED && ws.current.readyState !== WebSocket.CLOSING) {
                 ws.current.close(1000, "Reconnecting: Old instance cleanup");
             }
@@ -75,19 +76,19 @@ export default function LinguaVoxPage() {
         }
 
         const newWs = new WebSocket(WS_URL);
-        // Assign early to ws.current for consistent checking in handlers
-        // but only consider it "fully connected" in onopen.
-        ws.current = newWs; 
+        // Assign to ws.current immediately for consistent checking in handlers.
+        ws.current = newWs;
 
         newWs.onopen = () => {
             if (ws.current !== newWs) {
-                console.log("[Client] onopen: Stale WebSocket instance. Closing and ignoring.");
+                console.log("[Client] onopen: Stale WebSocket instance detected. Closing this stale connection and ignoring open event.");
                 newWs.close(1000, "Stale onopen callback");
-                // Do not reject here as a new connection might be in progress or just established.
+                // Do not reject here, as the *current* ws.current might be a different, valid connection
+                // or another connection attempt might be in progress.
                 return;
             }
-            console.log("[Client] WebSocket connected (client-side)");
-            setError(null);
+            console.log("[Client] WebSocket connected (client-side via newWs.onopen)");
+            setError(null); // Clear any previous connection errors
             resolve();
         };
 
@@ -102,12 +103,11 @@ export default function LinguaVoxPage() {
 
                 if (serverMessage.type === "translated_text_for_listener") {
                     setTranslatedText(prev => prev ? prev.trim() + " " + serverMessage.text.trim() : serverMessage.text.trim());
-                    // setIsProcessingServer(false); // Server is still processing future chunks, so keep this true if recognizing
                 } else if (serverMessage.error) {
                     console.error("[Client] Server WebSocket error:", serverMessage.error);
                     setError(`Server error: ${serverMessage.error}`);
                     toast({ title: "Translation Error", description: serverMessage.error, variant: "destructive" });
-                    setIsProcessingServer(false); // Error means processing stops
+                    setIsProcessingServer(false);
                 } else if (serverMessage.message) {
                     console.log("[Client] Informational message from server:", serverMessage.message);
                 }
@@ -117,29 +117,33 @@ export default function LinguaVoxPage() {
         };
 
         newWs.onerror = (event) => {
-            if (ws.current !== newWs && ws.current !== null) {
-                console.log("[Client] onerror: Stale or null WebSocket instance. Ignoring error.");
-                // If ws.current points to this instance, nullify it as it's now errored
-                if (ws.current === newWs) ws.current = null;
-                reject(new Error("Stale WebSocket instance onerror")); // Reject if this specific connection attempt failed
+            if (ws.current !== newWs) {
+                 console.log("[Client] onerror: Stale WebSocket instance. Ignoring error.");
+                 // This instance (newWs) is errored, ensure it's closed if not already
+                 if (newWs.readyState !== WebSocket.CLOSED && newWs.readyState !== WebSocket.CLOSING) {
+                    newWs.close(1000, "Stale onerror cleanup");
+                 }
+                // Do not reject here for stale instances, only if the *current* attempt fails.
                 return;
             }
             console.error("[Client] WebSocket error (client-side):", event);
             setError("WebSocket connection failed. Check console.");
             setIsProcessingServer(false);
-            if (streamingStateRef.current !== "error") setStreamingState("error"); // Transition to error state
+            if (streamingStateRef.current !== "error") setStreamingState("error");
             toast({ title: "Connection Error", description: "Could not connect to WebSocket server.", variant: "destructive" });
-            ws.current = null; // Nullify the ref as it's errored out
+            ws.current = null; // Nullify the current ref as this attempt failed
             reject(new Error("WebSocket connection error"));
         };
 
         newWs.onclose = (event) => {
-            if (ws.current !== newWs && ws.current !== null) {
-                console.log(`[Client] onclose: Stale or null WebSocket instance (URL: ${newWs.url}, Code: ${event.code}). Ignoring.`);
+            if (ws.current !== newWs && ws.current !== null) { // If ws.current is null, this specific newWs might have been the one that just closed.
+                console.log(`[Client] onclose: Stale or already replaced WebSocket instance (URL: ${newWs.url}, Code: ${event.code}). Ignoring.`);
                 return;
             }
             console.log(`[Client] WebSocket disconnected (client-side). Code: ${event.code}, Reason: "${event.reason}", Clean: ${event.wasClean}.`);
-            if (event.code !== 1000 && streamingStateRef.current !== "idle" && streamingStateRef.current !== "error") {
+            
+            // Only set error and toast if the closure was unexpected and not part of a deliberate stop/unmount.
+            if (event.code !== 1000 && streamingStateRef.current !== "idle" && streamingStateRef.current !== "stopping" && streamingStateRef.current !== "error") {
                 setError("WebSocket connection lost. Try restarting transcription.");
                 if (!event.wasClean) {
                     toast({ title: "Connection Lost", description: "Connection to the server was interrupted.", variant: "destructive" });
@@ -147,7 +151,8 @@ export default function LinguaVoxPage() {
                  if (streamingStateRef.current !== "error") setStreamingState("error");
             }
             setIsProcessingServer(false);
-            if (ws.current === newWs) { // Only nullify if it's the current active WS instance
+            // If this closing instance is indeed the one referenced by ws.current, nullify it.
+            if (ws.current === newWs) {
                 ws.current = null;
             }
         };
@@ -171,31 +176,29 @@ export default function LinguaVoxPage() {
       setStreamingState("error");
     }
 
-    // Attempt to connect WebSocket on initial mount if not already trying
-    if (!ws.current || (ws.current.readyState !== WebSocket.OPEN && ws.current.readyState !== WebSocket.CONNECTING)) {
-        connectWebSocket().catch(err => {
-            console.warn("[Client] Initial WebSocket connection attempt failed on mount:", err.message);
-            // Error handling is managed within connectWebSocket (setting error state, toast)
-        });
-    }
+    // Attempt to connect WebSocket on initial mount
+    // connectWebSocket handles not reconnecting if already open/connecting
+    connectWebSocket().catch(err => {
+        console.warn("[Client] Initial WebSocket connection attempt failed on mount:", err.message);
+        // Error state and toast are handled within connectWebSocket for connection-specific errors
+    });
 
 
     return () => {
       console.log("[Client] Main useEffect: Cleaning up. Current WebSocket state:", ws.current?.readyState);
-      stopInternals(true); // Stop MediaRecorder and associated streams
-
       if (ws.current) {
-        console.log("[Client] Closing WebSocket on component unmount...");
-        // Detach handlers before closing to prevent them from firing on a closed/stale instance
+        console.log("[Client] Cleaning up WebSocket instance in main useEffect cleanup.");
         ws.current.onopen = null;
         ws.current.onmessage = null;
         ws.current.onerror = null;
-        ws.current.onclose = null;
+        ws.current.onclose = null; // Crucial: Nullify onclose before closing
         if (ws.current.readyState === WebSocket.OPEN || ws.current.readyState === WebSocket.CONNECTING) {
           ws.current.close(1000, "Component unmounting");
         }
-        ws.current = null; // Nullify the ref after closing
+        ws.current = null;
       }
+      stopInternals(true); // Stop MediaRecorder and associated streams
+
       console.log("[Client] Main useEffect: Cleanup finished.");
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -206,11 +209,11 @@ export default function LinguaVoxPage() {
     if (!supportedMimeType) {
       setError("Audio format not supported for recording.");
       toast({ title: "Recording Error", description: "Audio format not supported.", variant: "destructive" });
-      setStreamingState("error");
-      setIsProcessingServer(false);
+      // Do not set streamingState here, let startTranscriptionCycle handle failure.
       return false;
     }
 
+    // Clean up previous MediaRecorder instance if any
     if (mediaRecorderRef.current) {
         console.warn("[Client] Existing MediaRecorder found. Cleaning up old MR and stream.");
         mediaRecorderRef.current.ondataavailable = null;
@@ -225,8 +228,9 @@ export default function LinguaVoxPage() {
         mediaRecorderRef.current = null;
     }
 
+    // Clean up previous system audio stream if switching to system audio or restarting
     if (systemAudioStreamRef.current && systemAudioStreamRef.current.active && audioInputModeRef.current === "system") {
-        console.warn("[Client] Existing systemAudioStreamRef found for system mode. Stopping tracks.");
+        console.warn("[Client] Existing systemAudioStreamRef found. Stopping its tracks before getting new one.");
         systemAudioStreamRef.current.getTracks().forEach(track => track.stop());
         systemAudioStreamRef.current = null;
     }
@@ -240,19 +244,16 @@ export default function LinguaVoxPage() {
         const audioTracks = displayStream.getAudioTracks();
         if (audioTracks.length > 0) {
             stream = new MediaStream(audioTracks);
-            // Stop video tracks immediately as they are not needed
             displayStream.getVideoTracks().forEach(track => track.stop());
-            systemAudioStreamRef.current = stream; // Store the system audio stream
+            systemAudioStreamRef.current = stream;
         } else {
             const noAudioMsg = "No audio track found in the selected screen/tab source.";
             setError(noAudioMsg);
             toast({ title: "Audio Capture Error", description: noAudioMsg, variant: "destructive" });
-            displayStream.getTracks().forEach(track => track.stop()); // Stop all tracks from displayMedia if no audio
-            setStreamingState("error");
-            setIsProcessingServer(false);
+            displayStream.getTracks().forEach(track => track.stop());
             return false;
         }
-      } else { // Microphone mode
+      } else {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
 
@@ -262,32 +263,29 @@ export default function LinguaVoxPage() {
       mediaRecorderRef.current.ondataavailable = (event: BlobEvent) => {
         if (event.data.size > 0 && ws.current && ws.current.readyState === WebSocket.OPEN) {
           ws.current.send(event.data);
-        } else if (event.data.size > 0) {
-          // This warning can be noisy if WS reconnects, consider removing or making less frequent
-          // console.warn("[Client] MR.ondataavailable: WebSocket not open or null. Cannot send audio chunk.");
         }
       };
 
       mediaRecorderRef.current.onstop = () => {
-        console.log(`[Client] MR.onstop (recording complete) for mode ${audioInputModeRef.current}. Stream Active: ${mediaRecorderRef.current?.stream?.active}`);
-        // The stream associated with THIS MediaRecorder instance should be stopped here.
+        console.log(`[Client] MR.onstop (recording complete) for mode ${audioInputModeRef.current}.`);
         if (mediaRecorderRef.current?.stream) {
             mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
         }
-        // If it was system audio, and this was the stream we stored, nullify it.
-        // This check is important if onstop fires after a new system stream has already been started by HMR or quick toggle.
         if (audioInputModeRef.current === "system" && systemAudioStreamRef.current === mediaRecorderRef.current?.stream) {
             systemAudioStreamRef.current = null;
         }
+        // Avoid setting state here directly, stopInternals or stopTranscriptionCycle should handle it
       };
       
       mediaRecorderRef.current.onerror = (event: Event) => {
         console.error("[Client] MediaRecorder error:", event);
         setError("Error during audio recording.");
         toast({ title: "Recording Error", description: "An error occurred with the audio recorder.", variant: "destructive" });
-        // Transition to error state, which should trigger stopInternals via useEffect on streamingState
-        if (streamingStateRef.current !== "error") setStreamingState("error");
-        setIsProcessingServer(false);
+        // Let startTranscriptionCycle or other callers handle state transition to 'error'
+        // Potentially call stopInternals here or rely on the main error handling flow
+        if (streamingStateRef.current !== "idle" && streamingStateRef.current !== "stopping") {
+            stopTranscriptionCycle(); // Try to gracefully stop everything on MR error.
+        }
       };
 
       mediaRecorderRef.current.start(MEDIA_RECORDER_TIMESLICE_MS);
@@ -301,21 +299,18 @@ export default function LinguaVoxPage() {
          userMessage = audioInputModeRef.current === "system" ? "Permission for screen/tab capture denied." : "Microphone permission denied.";
       } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError"){
          userMessage = audioInputModeRef.current === "system" ? "No screen/tab capture source found." : "No microphone found.";
-      } else if (err.name === "AbortError") { // User cancelled screen sharing selection
+      } else if (err.name === "AbortError") {
         userMessage = "Screen/tab capture canceled by user.";
       }
       setError(userMessage);
       toast({ title: "Capture Error", description: userMessage, variant: "destructive" });
-      // Clean up system audio stream if it was partially acquired
       if (systemAudioStreamRef.current && audioInputModeRef.current === "system") {
         systemAudioStreamRef.current.getTracks().forEach(track => track.stop());
         systemAudioStreamRef.current = null;
       }
-      setStreamingState("error");
-      setIsProcessingServer(false);
       return false;
     }
-  }, [supportedMimeType, toast]);
+  }, [supportedMimeType, toast, audioInputModeRef]); // Added audioInputModeRef
 
 
   const stopInternals = useCallback((isUnmounting = false) => {
@@ -323,22 +318,19 @@ export default function LinguaVoxPage() {
 
     if (mediaRecorderRef.current) {
       console.log("[Client] MR: Cleaning up handlers and stopping in stopInternals. Current state:", mediaRecorderRef.current.state);
-      mediaRecorderRef.current.ondataavailable = null; // Detach handlers first
+      mediaRecorderRef.current.ondataavailable = null;
       mediaRecorderRef.current.onstop = null;
       mediaRecorderRef.current.onerror = null;
 
+      if (mediaRecorderRef.current.stream && mediaRecorderRef.current.stream.active) {
+            mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      }
       if (mediaRecorderRef.current.state === "recording" || mediaRecorderRef.current.state === "paused") {
         try { mediaRecorderRef.current.stop(); } catch (e) { console.warn("Error stopping MR in stopInternals", e);}
       }
-       // Ensure stream associated with this MR is stopped
-       if (mediaRecorderRef.current.stream && mediaRecorderRef.current.stream.active) {
-            mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
-        }
       mediaRecorderRef.current = null;
     }
     
-    // Explicitly stop systemAudioStreamRef if it's still active and we're stopping
-    // This is important if system audio was captured but MR didn't fully take it or on unmount
     if (systemAudioStreamRef.current && systemAudioStreamRef.current.active) {
         console.log(`[Client] stopInternals: Explicitly stopping systemAudioStreamRef tracks (isUnmounting: ${isUnmounting}).`);
         systemAudioStreamRef.current.getTracks().forEach(track => track.stop());
@@ -350,86 +342,73 @@ export default function LinguaVoxPage() {
   const startTranscriptionCycle = useCallback(async () => {
     console.log(`[Client] Attempting to start transcription cycle. Current state: ${streamingStateRef.current} Source Lang: ${sourceLanguage}, Target Lang: ${targetLanguage}, Audio Mode: ${audioInputModeRef.current}`);
 
-    if (error) setError(null); // Clear previous errors
-    setTranscribedText(""); // Clear previous transcriptions
+    if (error) setError(null);
+    setTranscribedText("");
     setTranslatedText("");
 
-    // Start media recorder first
-    const mediaRecorderStarted = await startMediaRecorder();
-    if (!mediaRecorderStarted) {
-      // startMediaRecorder handles setting error state and toast
-      return;
-    }
-
-    // Media recorder started successfully, now proceed with WebSocket and state updates
-    setStreamingState("recognizing");
-    setIsProcessingServer(true);
-
     try {
+        // Ensure WebSocket is connected first
         if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
-            console.log("[Client] WebSocket not connected in startTranscriptionCycle. Attempting to connect/reconnect...");
-            await connectWebSocket(); // connectWebSocket now returns a promise
+            console.log("[Client] WebSocket not connected in startTranscriptionCycle. Attempting to connect...");
+            await connectWebSocket(); // connectWebSocket returns a promise
 
-            // Polling with timeout to wait for connection
-            let attempts = 0;
-            const maxAttempts = 10; // e.g., 5 seconds with 500ms interval
-            while ((!ws.current || ws.current.readyState !== WebSocket.OPEN) && attempts < maxAttempts) {
-                console.log(`[Client] Waiting for WebSocket connection... Attempt ${attempts + 1}/${maxAttempts}`, {readyState: ws.current?.readyState});
-                await new Promise(resolveWait => setTimeout(resolveWait, 500));
-                attempts++;
-            }
-
+            // Simple wait for connection after attempt, can be made more robust
             if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
-                setError("Failed to connect to WebSocket after starting media. Stopping transcription.");
+                 await new Promise(r => setTimeout(r, 500)); // wait a bit more
+            }
+            if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
+                setError("Failed to connect to WebSocket. Please try again.");
                 toast({ title: "Connection Failed", description: "Could not connect to the server.", variant: "destructive"});
-                stopInternals(); // Stop MediaRecorder
-                setStreamingState("error");
+                setStreamingState("error"); // Set error state before returning
                 setIsProcessingServer(false);
                 return;
             }
         }
+        
+        // Then start media recorder
+        const mediaRecorderStarted = await startMediaRecorder();
+        if (!mediaRecorderStarted) {
+          // startMediaRecorder handles setting its own error state and toast
+          setStreamingState("error"); // Ensure main state reflects this failure
+          setIsProcessingServer(false);
+          return;
+        }
+
+        // If both WebSocket and MediaRecorder are ready, proceed
+        setStreamingState("recognizing");
+        setIsProcessingServer(true);
         
         console.log("[Client] Sending start_transcription_stream to server.");
         ws.current.send(JSON.stringify({
           action: 'start_transcription_stream',
           language: sourceLanguage,
           targetLanguage: targetLanguage,
-          model: 'base' // Or make this configurable
+          model: 'base'
         }));
 
         toast({ title: audioInputModeRef.current === "microphone" ? "Microphone Activated" : "Screen/Tab Capture Activated", description: `Streaming audio (mode: ${audioInputModeRef.current})...` });
 
     } catch (connectionError: any) {
-        console.error("[Client] Error during WebSocket connection in startTranscriptionCycle:", connectionError.message);
-        setError(`WebSocket connection failed: ${connectionError.message}`);
-        stopInternals(); // Stop MediaRecorder
+        console.error("[Client] Error during WebSocket connection or MediaRecorder start in startTranscriptionCycle:", connectionError.message);
+        setError(`Failed to start services: ${connectionError.message}`);
+        stopInternals(); // Clean up media if it was partially started
         setStreamingState("error");
         setIsProcessingServer(false);
     }
-
   }, [
     sourceLanguage, targetLanguage, connectWebSocket, toast, 
-    startMediaRecorder, stopInternals, error // Added error here to clear it
+    startMediaRecorder, stopInternals, error, audioInputModeRef
   ]);
 
 
   const stopTranscriptionCycle = useCallback(async () => {
     console.log("[Client] Attempting to stop transcription cycle. Current state (ref):", streamingStateRef.current);
-    if (streamingStateRef.current === "idle" || streamingStateRef.current === "error") {
-      if(error && streamingStateRef.current === "idle") setError(null); // Clear error if stopping from idle
-      setIsProcessingServer(false); // Ensure this is false
-      return;
-    }
-    if (streamingStateRef.current === "stopping") {
-      console.log("[Client] Already stopping. No action.");
-      return; // Already in the process of stopping
-    }
-
-    setStreamingState("stopping"); // Indicate stopping process
+    
+    // Set stopping state immediately to prevent new start attempts and update UI
+    setStreamingState("stopping"); 
 
     stopInternals(); // Stop MediaRecorder and associated streams first
 
-    // Send stop message to server if WebSocket is open
     if (ws.current && ws.current.readyState === WebSocket.OPEN) {
       console.log("[Client] Sending stop_transcription_stream to server.");
       ws.current.send(JSON.stringify({ action: 'stop_transcription_stream' }));
@@ -438,11 +417,14 @@ export default function LinguaVoxPage() {
     }
     
     // Reset states after stopping attempts and local cleanup
+    // setIsProcessingServer(false); // Should already be false or become false from WS messages/errors
+    // No, set it explicitly
     setIsProcessingServer(false);
-    setStreamingState("idle"); // Transition to idle after stopping
+    setStreamingState("idle"); 
     toast({title: "Transcription Stopped"});
+    if (error && streamingStateRef.current === "idle") setError(null); // Clear error if stopping successfully to idle
 
-  }, [stopInternals, error, toast]); // Added error to allow clearing
+  }, [stopInternals, error, toast]);
 
 
   const handleToggleStreaming = () => {
@@ -457,50 +439,48 @@ export default function LinguaVoxPage() {
   };
 
 
-  // --- Derived UI State (moved to top of component body for clarity) ---
-  let StreamButtonIcon = Mic;
+  // --- Derived UI State ---
+  let StreamButtonIconComponent = Mic;
   let streamButtonText = audioInputMode === "microphone" ? "Start Mic Transcription" : "Start Screen/Tab Record";
   let streamButtonVariant: "default" | "destructive" = "default";
   let statusMessage = "";
+  let iconShouldAnimateSpin = false;
 
   if (streamingState === "recognizing") {
-    StreamButtonIcon = MicOff;
+    if (isProcessingServer) {
+        StreamButtonIconComponent = Loader2; // Show loader as icon when server is processing
+        iconShouldAnimateSpin = true;
+        statusMessage = "Server processing audio...";
+    } else {
+        StreamButtonIconComponent = MicOff; // MicOff when actively streaming but maybe server is caught up
+        statusMessage = "Streaming audio...";
+    }
     streamButtonText = audioInputMode === "microphone" ? "Stop Mic Transcription" : "Stop Screen/Tab Record";
     streamButtonVariant = "destructive";
-    if (isProcessingServer) { // isProcessingServer true means we are waiting for server
-        statusMessage = "Server processing audio...";
-    } else if (!error) { // Should not happen if recognizing, but as a fallback
-        statusMessage = "Streaming... Waiting for server...";
-    }
   } else if (streamingState === "stopping") {
-    StreamButtonIcon = Loader2; // Use Loader2 for stopping state icon as well
+    StreamButtonIconComponent = Loader2;
+    iconShouldAnimateSpin = true;
     streamButtonText = "Stopping...";
-    // streamButtonVariant remains default or whatever it was
+    statusMessage = "Finalizing..."
   } else if (streamingState === "error") {
+      StreamButtonIconComponent = AlertTriangle; // Use AlertTriangle for error state icon
       if (!supportedMimeType) {
          statusMessage = "Audio recording not supported.";
       } else if (error){
-         statusMessage = error; // Display the actual error message
+         statusMessage = error;
       } else {
          statusMessage = "An error occurred. Try again.";
       }
+      // Keep default button text for retry
   } else if (streamingState === "idle") {
-      if (error) statusMessage = error; // Show persistent error if any
-      // else: no specific message for idle unless there's an error
+      StreamButtonIconComponent = Mic; // Default icon
+      if (error) statusMessage = error;
+      // Default button text is already set
   }
 
-
-  // Button should be disabled if stopping, or if MIME type isn't supported (unless in error state from other cause)
   const isButtonDisabled = streamingState === "stopping" || (!supportedMimeType && streamingState !== "error");
-  // Loading indicator for the button content (spinner next to text)
-  const isLoadingForButtonSpinner = streamingState === "recognizing" && isProcessingServer;
-  // If the ICON itself should be a spinner (e.g. for "stopping" state)
-  const isStreamButtonIconLoader = streamingState === "stopping";
 
-
-  const languageSelectorItems = supportedLanguages.map(lang => ({
-    ...lang,
-  }));
+  const languageSelectorItems = supportedLanguages.map(lang => ({ ...lang }));
 
 
   return (
@@ -554,7 +534,7 @@ export default function LinguaVoxPage() {
                 label="Target Language (Translation)"
                 value={targetLanguage}
                 onValueChange={(value) => {
-                  setTargetLanguage(value); // Allow changing target language unless actively stopping
+                  setTargetLanguage(value);
                 }}
                 languages={languageSelectorItems}
                 disabled={streamingState === "stopping"} 
@@ -568,7 +548,7 @@ export default function LinguaVoxPage() {
                      if (streamingState !== "recognizing" && streamingState !== "stopping") {
                        setAudioInputMode(value as AudioInputMode);
                        console.log("[Client] Audio input mode changed to:", value);
-                       setTranscribedText(""); // Clear text areas when mode changes
+                       setTranscribedText(""); 
                        setTranslatedText("");
                      }
                   }}
@@ -596,23 +576,18 @@ export default function LinguaVoxPage() {
                 className="w-full md:w-auto px-8 py-6 text-lg transition-all duration-300 ease-in-out transform hover:scale-105"
                 variant={streamButtonVariant}
               >
-                {isLoadingForButtonSpinner ? ( 
-                  <Loader2 className="mr-2 h-6 w-6 animate-spin" />
-                ) : (
-                  <StreamButtonIcon className={`mr-2 h-6 w-6 ${isStreamButtonIconLoader ? "animate-spin" : ""}`} />
-                )}
+                <StreamButtonIconComponent className={`mr-2 h-6 w-6 ${iconShouldAnimateSpin ? "animate-spin" : ""}`} />
                 {streamButtonText}
               </Button>
                <div className="min-h-[20px] flex flex-col items-center justify-center space-y-1 text-sm">
-                  {statusMessage && <p className={`animate-pulse ${error || streamingState === 'error' ? 'text-destructive' : 'text-primary'}`}>{statusMessage}</p>}
+                  {statusMessage && <p className={` ${error || streamingState === 'error' ? 'text-destructive' : 'text-primary'} ${streamingState === "recognizing" || streamingState === "stopping" ? "animate-pulse" : ""}`}>{statusMessage}</p>}
               </div>
             </div>
 
-            {/* This is a more prominent error display area, separate from statusMessage if needed */}
-            {error && streamingState === 'error' && (
+            {error && streamingState === 'error' && !statusMessage.includes(error) && ( // Show only if error is not already in statusMessage
               <div className="mt-4 p-4 bg-destructive/10 border border-destructive/30 rounded-md text-destructive flex items-center gap-2">
                 <AlertTriangle className="h-5 w-5"/>
-                <p>{error}</p> {/* error state already holds the specific message */}
+                <p>{error}</p>
               </div>
             )}
 
@@ -660,4 +635,3 @@ export default function LinguaVoxPage() {
     </div>
   );
 }
-
